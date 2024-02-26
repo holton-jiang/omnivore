@@ -191,6 +191,8 @@
 "filesGeneric" = "文件";
 "newestGeneric" = "最新";
 "oldestGeneric" = "最早";
+"longestGeneric" = "内容最长";
+"shortestGeneric" = "内容最短";
 "recentlyReadGeneric" = "最近阅读";
 "recentlyPublishedGeneric" = "最近发布";
 "clubsGeneric" = "阅读俱乐部";
