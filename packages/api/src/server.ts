@@ -9,12 +9,15 @@ import { json, urlencoded } from 'body-parser'
 import cookieParser from 'cookie-parser'
 import express, { Express } from 'express'
 import * as httpContext from 'express-http-context2'
+import promBundle from 'express-prom-bundle'
 import rateLimit from 'express-rate-limit'
 import { createServer, Server } from 'http'
+import * as prom from 'prom-client'
 import { config, loggers } from 'winston'
 import { makeApolloServer } from './apollo'
 import { appDataSource } from './data_source'
 import { env } from './env'
+import { redisDataSource } from './redis_data_source'
 import { articleRouter } from './routers/article_router'
 import { authRouter } from './routers/auth/auth_router'
 import { mobileAuthRouter } from './routers/auth/mobile/mobile_auth_router'
@@ -37,17 +40,15 @@ import { webhooksServiceRouter } from './routers/svc/webhooks'
 import { textToSpeechRouter } from './routers/text_to_speech'
 import { userRouter } from './routers/user_router'
 import { sentryConfig } from './sentry'
+import { analytics } from './utils/analytics'
 import {
   getClaimsByToken,
   getTokenByRequest,
   isSystemRequest,
 } from './utils/auth'
 import { corsConfig } from './utils/corsConfig'
-import { buildLogger, buildLoggerTransport } from './utils/logger'
-import { redisDataSource } from './redis_data_source'
-import * as prom from 'prom-client'
-import promBundle from 'express-prom-bundle'
-import { createPrometheusExporterPlugin } from '@bmatei/apollo-prometheus-exporter'
+import { buildLogger, buildLoggerTransport, logger } from './utils/logger'
+import { aiSummariesRouter } from './routers/ai_summary_router'
 
 const PORT = process.env.PORT || 4000
 
@@ -121,6 +122,7 @@ export const createApp = (): {
   app.use('/api/page', pageRouter())
   app.use('/api/user', userRouter())
   app.use('/api/article', articleRouter())
+  app.use('/api/ai-summary', aiSummariesRouter())
   app.use('/api/text-to-speech', textToSpeechRouter())
   app.use('/api/notification', notificationRouter())
   app.use('/api/integration', integrationRouter())
@@ -213,6 +215,10 @@ const main = async (): Promise<void> => {
   listener.timeout = 640 * 1000 // match headersTimeout
 
   const gracefulShutdown = async (signal: string) => {
+    console.log('[posthog]: flushing events')
+    await analytics.shutdownAsync()
+    console.log('[posthog]: events flushed')
+
     console.log(`[api]: Received ${signal}, closing server...`)
 
     await apollo.stop()
@@ -241,6 +247,16 @@ const main = async (): Promise<void> => {
 
   process.on('SIGINT', () => gracefulShutdown('SIGINT'))
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+
+  process.on('uncaughtException', function (err) {
+    // Handle the error safely
+    logger.error('Uncaught exception', err)
+  })
+
+  process.on('unhandledRejection', (reason, promise) => {
+    // Handle the error safely
+    logger.error('Unhandled Rejection at: Promise', { promise, reason })
+  })
 }
 
 // only call main if the file was called from the CLI and wasn't required from another module

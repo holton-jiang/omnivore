@@ -13,6 +13,7 @@ import {
 import express, { Express } from 'express'
 import { appDataSource } from './data_source'
 import { env } from './env'
+import { aiSummarize, AI_SUMMARIZE_JOB_NAME } from './jobs/ai-summarize'
 import { bulkAction, BULK_ACTION_JOB_NAME } from './jobs/bulk_action'
 import { callWebhook, CALL_WEBHOOK_JOB_NAME } from './jobs/call_webhook'
 import { findThumbnail, THUMBNAIL_JOB } from './jobs/find_thumbnail'
@@ -113,6 +114,8 @@ export const createWorker = (connection: ConnectionOptions) =>
           return callWebhook(job.data)
         case EXPORT_ITEM_JOB_NAME:
           return exportItem(job.data)
+        case AI_SUMMARIZE_JOB_NAME:
+          return aiSummarize(job.data)
         case EXPORT_ALL_ITEMS_JOB_NAME:
           return exportAllItems(job.data)
       }
@@ -253,6 +256,16 @@ const main = async () => {
 
   process.on('SIGINT', () => gracefulShutdown('SIGINT'))
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+
+  process.on('uncaughtException', function (err) {
+    // Handle the error safely
+    logger.error('Uncaught exception', err)
+  })
+
+  process.on('unhandledRejection', (reason, promise) => {
+    // Handle the error safely
+    logger.error('Unhandled Rejection at: Promise', { promise, reason })
+  })
 }
 
 // only call main if the file was called from the CLI and wasn't required from another module

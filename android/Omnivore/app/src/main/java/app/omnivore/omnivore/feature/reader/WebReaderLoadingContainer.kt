@@ -6,6 +6,7 @@ import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -30,7 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -61,7 +61,6 @@ import app.omnivore.omnivore.feature.notebook.NotebookView
 import app.omnivore.omnivore.feature.notebook.NotebookViewModel
 import app.omnivore.omnivore.feature.savedItemViews.SavedItemContextMenu
 import app.omnivore.omnivore.feature.theme.OmnivoreTheme
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -80,24 +79,14 @@ class WebReaderLoadingContainerActivity : ComponentActivity() {
 
         viewModel.loadItem(slug = slug, requestID = requestID)
 
+        enableEdgeToEdge()
+
         setContent {
-            val systemUiController = rememberSystemUiController()
-            val useDarkIcons = !isSystemInDarkTheme()
-
-            DisposableEffect(systemUiController, useDarkIcons) {
-                systemUiController.setSystemBarsColor(
-                    color = Color.Black,
-                    darkIcons = false
-                )
-
-                onDispose {}
-            }
-
             OmnivoreTheme {
                 Box(
                     modifier = Modifier
-                      .fillMaxSize()
-                      .background(color = Color.Black)
+                        .fillMaxSize()
+                        .background(color = if (isSystemInDarkTheme()) Color.Black else Color.White)
                 ) {
                     if (viewModel.hasFetchError.value == true) {
                         Text(stringResource(R.string.web_reader_loading_container_error_msg))
@@ -513,11 +502,11 @@ fun ReaderTopAppBar(
 fun BottomSheetUI(content: @Composable () -> Unit) {
     Box(
         modifier = Modifier
-          .wrapContentHeight()
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(topEnd = 20.dp, topStart = 20.dp))
-          .background(Color.White)
-          .statusBarsPadding()
+            .wrapContentHeight()
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topEnd = 20.dp, topStart = 20.dp))
+            .background(Color.White)
+            .statusBarsPadding()
     ) {
         Scaffold { paddingValues ->
             Box(modifier = Modifier.fillMaxSize()) {

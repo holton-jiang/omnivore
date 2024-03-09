@@ -70,9 +70,14 @@ const sendNotification = async (obj: RuleActionObj) => {
   const message = {
     title: item.author || item.siteName || 'Omnivore',
     body: item.title,
+    image: item.thumbnail,
+  }
+  const data = {
+    folder: item.folder,
+    libraryItemId: item.id,
   }
 
-  return sendPushNotifications(obj.userId, message, 'rule')
+  return sendPushNotifications(obj.userId, message, 'rule', data)
 }
 
 const getRuleAction = (actionType: RuleActionType): RuleActionFunc => {
@@ -130,7 +135,7 @@ const triggerActions = async (
   try {
     await Promise.all(actionPromises)
   } catch (error) {
-    logger.error(error)
+    logger.error('Error triggering rule actions', error)
   }
 }
 

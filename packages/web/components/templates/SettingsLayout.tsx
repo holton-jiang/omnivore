@@ -11,6 +11,8 @@ import { PageMetaData } from '../patterns/PageMetaData'
 import { DEFAULT_HEADER_HEIGHT } from './homeFeed/HeaderSpacer'
 import { logout } from '../../lib/logout'
 import { SettingsMenu } from './navMenu/SettingsMenu'
+import { SettingsDropdown } from './navMenu/SettingsDropdown'
+import { useVerifyAuth } from '../../lib/hooks/useVerifyAuth'
 
 type SettingsLayoutProps = {
   title?: string
@@ -18,7 +20,8 @@ type SettingsLayoutProps = {
 }
 
 export function SettingsLayout(props: SettingsLayoutProps): JSX.Element {
-  const { viewerData } = useGetViewerQuery()
+  useVerifyAuth()
+
   const router = useRouter()
   const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false)
   const [showKeyboardCommandsModal, setShowKeyboardCommandsModal] =
@@ -50,8 +53,23 @@ export function SettingsLayout(props: SettingsLayoutProps): JSX.Element {
         <Box
           css={{
             height: DEFAULT_HEADER_HEIGHT,
+            '@mdDown': {
+              display: 'none',
+            },
           }}
         ></Box>
+        <Box
+          css={{
+            p: '15px',
+            display: 'none',
+            height: DEFAULT_HEADER_HEIGHT,
+            '@mdDown': {
+              display: 'flex',
+            },
+          }}
+        >
+          <SettingsDropdown />
+        </Box>
         <HStack css={{ width: '100%', height: '100%' }} distribution="start">
           <SettingsMenu />
           {props.children}

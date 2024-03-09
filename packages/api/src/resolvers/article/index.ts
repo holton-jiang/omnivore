@@ -73,6 +73,7 @@ import {
 import {
   batchDelete,
   batchUpdateLibraryItems,
+  countLibraryItems,
   createOrUpdateLibraryItem,
   findLibraryItemsByPrefix,
   searchLibraryItems,
@@ -152,8 +153,8 @@ export const createArticleResolver = authorized<
     },
     { log, uid, pubsub }
   ) => {
-    analytics.track({
-      userId: uid,
+    analytics.capture({
+      distinctId: uid,
       event: 'link_saved',
       properties: {
         url,
@@ -491,7 +492,7 @@ export const getArticleResolver = authorized<
 //         source: 'resolver',
 //         resolver: 'setShareArticleResolver',
 //         articleId: article.id,
-//         userId: uid,
+//         distinctId: uid,
 //       },
 //     })
 
@@ -535,8 +536,8 @@ export const setBookmarkArticleResolver = authorized<
   // delete the item and its metadata
   const deletedLibraryItem = await softDeleteLibraryItem(articleID, uid, pubsub)
 
-  analytics.track({
-    userId: uid,
+  analytics.capture({
+    distinctId: uid,
     event: 'link_removed',
     properties: {
       id: articleID,
@@ -833,8 +834,8 @@ export const bulkActionResolver = authorized<
     { uid, log }
   ) => {
     try {
-      analytics.track({
-        userId: uid,
+      analytics.capture({
+        distinctId: uid,
         event: 'BulkAction',
         properties: {
           env: env.server.apiEnv,
@@ -847,8 +848,7 @@ export const bulkActionResolver = authorized<
         query,
         size: 0,
       }
-      const searchResult = await searchLibraryItems(searchArgs, uid)
-      const count = searchResult.count
+      const count = await countLibraryItems(searchArgs, uid)
       if (count === 0) {
         log.info('No items found for bulk action')
         return { success: true }
@@ -856,6 +856,11 @@ export const bulkActionResolver = authorized<
 
       if (count <= batchSize) {
         searchArgs.size = count
+        log.info('Bulk action: updating items synchronously', {
+          query,
+          action,
+          count,
+        })
         // if there are less than 100 items, update them synchronously
         await batchUpdateLibraryItems(action, searchArgs, uid, labelIds, args)
 
@@ -872,6 +877,7 @@ export const bulkActionResolver = authorized<
         args,
         batchSize,
       }
+      log.info('enqueue bulk action job', data)
       const job = await enqueueBulkAction(data)
       if (!job) {
         return { errorCodes: [BulkActionErrorCode.BadRequest] }
@@ -891,8 +897,8 @@ export const setFavoriteArticleResolver = authorized<
   MutationSetFavoriteArticleArgs
 >(async (_, { id }, { uid, log }) => {
   try {
-    analytics.track({
-      userId: uid,
+    analytics.capture({
+      distinctId: uid,
       event: 'setFavoriteArticle',
       properties: {
         env: env.server.apiEnv,
@@ -928,8 +934,8 @@ export const moveToFolderResolver = authorized<
   MoveToFolderError,
   MutationMoveToFolderArgs
 >(async (_, { id, folder }, { authTrx, log, pubsub, uid }) => {
-  analytics.track({
-    userId: uid,
+  analytics.capture({
+    distinctId: uid,
     event: 'move_to_folder',
     properties: {
       id,
@@ -1002,8 +1008,8 @@ export const fetchContentResolver = authorized<
   FetchContentError,
   MutationFetchContentArgs
 >(async (_, { id }, { authTrx, uid, log, pubsub }) => {
-  analytics.track({
-    userId: uid,
+  analytics.capture({
+    distinctId: uid,
     event: 'fetch_content',
     properties: {
       id,
@@ -1052,8 +1058,8 @@ export const emptyTrashResolver = authorized<
   EmptyTrashSuccess,
   EmptyTrashError
 >(async (_, __, { uid }) => {
-  analytics.track({
-    userId: uid,
+  analytics.capture({
+    distinctId: uid,
     event: 'empty_trash',
   })
 

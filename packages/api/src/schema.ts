@@ -88,6 +88,7 @@ const schema = gql`
     email: String
     source: String
     intercomHash: String
+    features: [String]
   }
 
   type Profile {
@@ -353,6 +354,11 @@ const schema = gql`
     note: String
   }
 
+  enum DirectionalityType {
+    LTR
+    RTL
+  }
+
   type Article {
     id: ID!
     title: String!
@@ -398,6 +404,7 @@ const schema = gql`
     wordsCount: Int
     folder: String!
     feedContent: String
+    directionality: DirectionalityType
   }
 
   # Query: article
@@ -1647,6 +1654,8 @@ const schema = gql`
     previewContentType: String
     links: JSON
     folder: String!
+    aiSummary: String
+    directionality: DirectionalityType
   }
 
   type SearchItemEdge {
