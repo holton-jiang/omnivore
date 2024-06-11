@@ -8,14 +8,16 @@
   import Views
 
   public struct MiniPlayerViewer: View {
+    var showStopButton = true
     @EnvironmentObject var audioController: AudioController
     @Environment(\.colorScheme) private var colorScheme: ColorScheme
 
     @State var expanded = true
 
-    let itemAudioProperties: LinkedItemAudioProperties
-
     var playPauseButtonImage: String {
+#if targetEnvironment(simulator)
+      return "play.circle"
+#endif
       switch audioController.state {
       case .playing:
         return "pause.circle"
@@ -29,10 +31,21 @@
     }
 
     var playPauseButtonItem: some View {
+#if targetEnvironment(simulator)
+      return AnyView(Button(
+        action: {},
+        label: {
+          Image(systemName: playPauseButtonImage)
+            .resizable(resizingMode: Image.ResizingMode.stretch)
+            .aspectRatio(contentMode: .fit)
+            .font(Font.title.weight(.light))
+        }
+      ).buttonStyle(.plain))
+#endif
       if audioController.playbackError {
         return AnyView(Color.clear)
       }
-      if let itemID = audioController.itemAudioProperties?.itemID, audioController.isLoadingItem(itemID: itemID) {
+      if audioController.isLoadingItem(audioController.itemAudioProperties) {
         return AnyView(ProgressView())
       } else {
         return AnyView(Button(
@@ -84,8 +97,8 @@
       .buttonStyle(PlainButtonStyle())
     }
 
-    func artwork(_ itemAudioProperties: LinkedItemAudioProperties, forDimensions dim: Double) -> some View {
-      if let imageURL = itemAudioProperties.imageURL {
+    func artwork(_ itemAudioProperties: AudioItemProperties?, forDimensions dim: Double) -> some View {
+      if let imageURL = itemAudioProperties?.imageURL {
         return AnyView(AsyncImage(url: imageURL) { phase in
           if let image = phase.image {
             image
@@ -125,9 +138,9 @@
             Text("There was an error playing back your audio.").foregroundColor(Color.red).font(.footnote)
             Spacer(minLength: 0)
           } else {
-            artwork(itemAudioProperties, forDimensions: 50)
+            artwork(audioController.itemAudioProperties, forDimensions: 50)
 
-            Text(itemAudioProperties.title)
+            Text(audioController.itemAudioProperties?.title ?? "")
               .font(Font.system(size: 17, weight: .medium))
               .fixedSize(horizontal: false, vertical: true)
               .lineLimit(2)
@@ -140,9 +153,11 @@
               .frame(width: 40, height: 40)
               .foregroundColor(.themeAudioPlayerGray)
           }
-          stopButton
-            .frame(width: 40, height: 40)
-            .foregroundColor(.themeAudioPlayerGray)
+          if showStopButton {
+            stopButton
+              .frame(width: 40, height: 40)
+              .foregroundColor(.themeAudioPlayerGray)
+          }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 15)

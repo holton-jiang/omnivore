@@ -36,12 +36,13 @@ export const claimsFromApiKey = async (key: string): Promise<Claims> => {
 
   const apiKeyRepo = getRepository(ApiKey)
 
-  const apiKey = await apiKeyRepo.findOne({
-    where: {
+  const apiKey = await apiKeyRepo
+    .createQueryBuilder('apiKey')
+    .innerJoinAndSelect('apiKey.user', 'user')
+    .where({
       key: hashedKey,
-    },
-    relations: ['user'],
-  })
+    })
+    .getOne()
   if (!apiKey) {
     throw new Error('api key not found')
   }
@@ -124,8 +125,7 @@ export const getTokenByRequest = (req: express.Request): string | undefined => {
   return (
     req.header(OmnivoreAuthorizationHeader) ||
     req.headers.authorization ||
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    (req.cookies?.auth as string)
+    (req.cookies.auth as string | undefined)
   )
 }
 

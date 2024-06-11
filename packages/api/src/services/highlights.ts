@@ -1,18 +1,39 @@
 import { diff_match_patch } from 'diff-match-patch'
-import { DeepPartial } from 'typeorm'
+import { DeepPartial, In } from 'typeorm'
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity'
 import { EntityLabel } from '../entity/entity_label'
 import { Highlight } from '../entity/highlight'
 import { Label } from '../entity/label'
 import { homePageURL } from '../env'
-import { createPubSubClient, EntityType } from '../pubsub'
+import { createPubSubClient, EntityEvent, EntityType } from '../pubsub'
 import { authTrx } from '../repository'
 import { highlightRepository } from '../repository/highlight'
+import { Merge } from '../util'
 import { enqueueUpdateHighlight } from '../utils/createTask'
+import { deepDelete } from '../utils/helpers'
+import { ItemEvent } from './library_item'
 
-type HighlightEvent = { id: string; pageId: string }
-type CreateHighlightEvent = DeepPartial<Highlight> & HighlightEvent
-type UpdateHighlightEvent = QueryDeepPartialEntity<Highlight> & HighlightEvent
+const columnsToDelete = ['user', 'sharedAt', 'libraryItem'] as const
+type ColumnsToDeleteType = typeof columnsToDelete[number]
+export type HighlightEvent = Merge<
+  Omit<DeepPartial<Highlight>, ColumnsToDeleteType>,
+  EntityEvent
+>
+
+export const batchGetHighlightsFromLibraryItemIds = async (
+  libraryItemIds: readonly string[]
+): Promise<Highlight[][]> => {
+  const highlights = await authTrx(async (tx) =>
+    tx.getRepository(Highlight).find({
+      where: { libraryItem: { id: In(libraryItemIds as string[]) } },
+      relations: ['user'],
+    })
+  )
+
+  return libraryItemIds.map((libraryItemId) =>
+    highlights.filter((highlight) => highlight.libraryItemId === libraryItemId)
+  )
+}
 
 export const getHighlightLocation = (patch: string): number | undefined => {
   const dmp = new diff_match_patch()
@@ -49,6 +70,7 @@ export const createHighlight = async (
         where: { id: newHighlight.id },
         relations: {
           user: true,
+          libraryItem: true,
         },
       })
     },
@@ -56,11 +78,19 @@ export const createHighlight = async (
     userId
   )
 
-  await pubsub.entityCreated<CreateHighlightEvent>(
+  const data = deepDelete(newHighlight, columnsToDelete)
+  await pubsub.entityCreated<ItemEvent>(
     EntityType.HIGHLIGHT,
-    { ...newHighlight, pageId: libraryItemId },
-    userId,
-    libraryItemId
+    {
+      id: libraryItemId,
+      highlights: [data],
+      // for Readwise
+      originalUrl: newHighlight.libraryItem.originalUrl,
+      title: newHighlight.libraryItem.title,
+      author: newHighlight.libraryItem.author,
+      thumbnail: newHighlight.libraryItem.thumbnail,
+    },
+    userId
   )
 
   await enqueueUpdateHighlight({
@@ -100,15 +130,22 @@ export const mergeHighlights = async (
       where: { id: newHighlight.id },
       relations: {
         user: true,
+        libraryItem: true,
       },
     })
   })
 
-  await pubsub.entityCreated<CreateHighlightEvent>(
+  await pubsub.entityCreated<ItemEvent>(
     EntityType.HIGHLIGHT,
-    { ...newHighlight, pageId: libraryItemId },
-    userId,
-    libraryItemId
+    {
+      id: libraryItemId,
+      originalUrl: newHighlight.libraryItem.originalUrl,
+      title: newHighlight.libraryItem.title,
+      author: newHighlight.libraryItem.author,
+      thumbnail: newHighlight.libraryItem.thumbnail,
+      highlights: [newHighlight],
+    },
+    userId
   )
 
   await enqueueUpdateHighlight({
@@ -139,11 +176,25 @@ export const updateHighlight = async (
   })
 
   const libraryItemId = updatedHighlight.libraryItem.id
-  await pubsub.entityUpdated<UpdateHighlightEvent>(
+  await pubsub.entityUpdated<ItemEvent>(
     EntityType.HIGHLIGHT,
-    { ...highlight, id: highlightId, pageId: libraryItemId },
-    userId,
-    libraryItemId
+    {
+      id: libraryItemId,
+      originalUrl: updatedHighlight.libraryItem.originalUrl,
+      title: updatedHighlight.libraryItem.title,
+      author: updatedHighlight.libraryItem.author,
+      thumbnail: updatedHighlight.libraryItem.thumbnail,
+      highlights: [
+        {
+          ...highlight,
+          id: highlightId,
+          updatedAt: new Date(),
+          quote: updatedHighlight.quote,
+          highlightType: updatedHighlight.highlightType,
+        },
+      ],
+    } as ItemEvent,
+    userId
   )
 
   await enqueueUpdateHighlight({
@@ -154,19 +205,26 @@ export const updateHighlight = async (
   return updatedHighlight
 }
 
-export const deleteHighlightById = async (highlightId: string) => {
-  const deletedHighlight = await authTrx(async (tx) => {
-    const highlightRepo = tx.withRepository(highlightRepository)
-    const highlight = await highlightRepo.findOneOrFail({
-      where: { id: highlightId },
-      relations: {
-        user: true,
-      },
-    })
+export const deleteHighlightById = async (
+  highlightId: string,
+  userId?: string
+) => {
+  const deletedHighlight = await authTrx(
+    async (tx) => {
+      const highlightRepo = tx.withRepository(highlightRepository)
+      const highlight = await highlightRepo.findOneOrFail({
+        where: { id: highlightId },
+        relations: {
+          user: true,
+        },
+      })
 
-    await highlightRepo.delete(highlightId)
-    return highlight
-  })
+      await highlightRepo.delete(highlightId)
+      return highlight
+    },
+    undefined,
+    userId
+  )
 
   await enqueueUpdateHighlight({
     libraryItemId: deletedHighlight.libraryItemId,
@@ -174,6 +232,17 @@ export const deleteHighlightById = async (highlightId: string) => {
   })
 
   return deletedHighlight
+}
+
+export const deleteHighlightsByIds = async (
+  userId: string,
+  highlightIds: string[]
+) => {
+  await authTrx(
+    async (tx) => tx.getRepository(Highlight).delete(highlightIds),
+    undefined,
+    userId
+  )
 }
 
 export const findHighlightById = async (
@@ -205,6 +274,54 @@ export const findHighlightsByLibraryItemId = async (
           labels: true,
         },
       }),
+    undefined,
+    userId
+  )
+}
+
+export const searchHighlights = async (
+  userId: string,
+  query?: string,
+  limit?: number,
+  offset?: number
+): Promise<Array<Highlight>> => {
+  return authTrx(
+    async (tx) => {
+      const queryBuilder = tx
+        .getRepository(Highlight)
+        .createQueryBuilder('highlight')
+        .innerJoin(
+          'highlight.libraryItem',
+          'libraryItem',
+          'highlight.libraryItemId = libraryItem.id AND libraryItem.deletedAt IS NULL'
+        )
+        .andWhere('highlight.userId = :userId', { userId })
+        .orderBy('highlight.updatedAt', 'DESC')
+        .take(limit)
+        .skip(offset)
+
+      if (query) {
+        // parse query and search by it
+        const labelRegex = /label:"([^"]+)"/g
+        const labels = Array.from(query.matchAll(labelRegex)).map(
+          (match) => match[1]
+        )
+
+        labels.forEach((label, index) => {
+          const alias = `label_${index}`
+          queryBuilder.innerJoin(
+            'highlight.labels',
+            alias,
+            `LOWER(${alias}.name) = LOWER(:${alias})`,
+            {
+              [alias]: label,
+            }
+          )
+        })
+      }
+
+      return queryBuilder.getMany()
+    },
     undefined,
     userId
   )

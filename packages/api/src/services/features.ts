@@ -3,16 +3,33 @@ import { DeepPartial, FindOptionsWhere, IsNull, Not } from 'typeorm'
 import { appDataSource } from '../data_source'
 import { Feature } from '../entity/feature'
 import { env } from '../env'
-import { getRepository } from '../repository'
+import { authTrx, getRepository } from '../repository'
 import { logger } from '../utils/logger'
+import { OptInFeatureErrorCode } from '../generated/graphql'
+import { Subscription, SubscriptionStatus } from '../entity/subscription'
+import { libraryItemRepository } from '../repository/library_item'
+import { LibraryItem } from '../entity/library_item'
 
 const MAX_ULTRA_REALISTIC_USERS = 1500
-const MAX_YOUTUBE_TRANSCRIPT_USERS = 100
+const MAX_YOUTUBE_TRANSCRIPT_USERS = 500
+const MAX_NOTION_USERS = 1000
+const MAX_AIDIGEST_USERS = 1000
 
 export enum FeatureName {
   AISummaries = 'ai-summaries',
   YouTubeTranscripts = 'youtube-transcripts',
   UltraRealisticVoice = 'ultra-realistic-voice',
+  Notion = 'notion',
+  AIDigest = 'ai-digest',
+  AIExplain = 'ai-explain',
+}
+
+export function isOptInFeatureErrorCode(
+  value: Feature | OptInFeatureErrorCode
+): value is OptInFeatureErrorCode {
+  return Object.values(OptInFeatureErrorCode).includes(
+    value as OptInFeatureErrorCode
+  )
 }
 
 export const getFeatureName = (name: string): FeatureName | undefined => {
@@ -22,7 +39,7 @@ export const getFeatureName = (name: string): FeatureName | undefined => {
 export const optInFeature = async (
   name: FeatureName,
   uid: string
-): Promise<Feature | undefined> => {
+): Promise<Feature | OptInFeatureErrorCode> => {
   switch (name) {
     case FeatureName.UltraRealisticVoice:
       return optInLimitedFeature(
@@ -36,8 +53,18 @@ export const optInFeature = async (
         uid,
         MAX_YOUTUBE_TRANSCRIPT_USERS
       )
+    case FeatureName.Notion:
+      return optInLimitedFeature(FeatureName.Notion, uid, MAX_NOTION_USERS)
+    case FeatureName.AIDigest: {
+      const eligible = await userDigestEligible(uid)
+      if (!eligible) {
+        return OptInFeatureErrorCode.Ineligible
+      }
+      return optInLimitedFeature(FeatureName.AIDigest, uid, MAX_AIDIGEST_USERS)
+    }
+    default:
+      return OptInFeatureErrorCode.NotFound
   }
-  return undefined
 }
 
 const optInLimitedFeature = async (
@@ -117,23 +144,20 @@ export const signFeatureToken = (
   )
 }
 
-export const findUserFeatures = async (userId: string): Promise<string[]> => {
-  return (
-    await getRepository(Feature).find({
-      where: {
-        user: { id: userId },
-      },
-    })
-  ).map((feature) => feature.name)
+export const findUserFeatures = async (userId: string) => {
+  return getRepository(Feature).findBy({
+    user: { id: userId },
+  })
 }
 
-export const findFeatureByName = async (
+export const findGrantedFeatureByName = async (
   name: FeatureName,
-  userId: string
+  userId: string,
+  relations?: 'user'[]
 ): Promise<Feature | null> => {
-  return await getRepository(Feature).findOneBy({
-    name,
-    user: { id: userId },
+  return getRepository(Feature).findOne({
+    where: { name, user: { id: userId }, grantedAt: Not(IsNull()) },
+    relations,
   })
 }
 
@@ -149,4 +173,28 @@ export const createFeature = async (feature: DeepPartial<Feature>) => {
 
 export const createFeatures = async (features: DeepPartial<Feature>[]) => {
   return getRepository(Feature).save(features)
+}
+
+export const userDigestEligible = async (uid: string): Promise<boolean> => {
+  const subscriptionsCount = await authTrx(
+    async (tx) => {
+      return tx.getRepository(Subscription).count({
+        where: { user: { id: uid }, status: SubscriptionStatus.Active },
+      })
+    },
+    undefined,
+    uid
+  )
+
+  const libraryItemsCount = await authTrx(
+    async (tx) => {
+      return tx.getRepository(LibraryItem).count({
+        where: { user: { id: uid } },
+      })
+    },
+    undefined,
+    uid
+  )
+
+  return subscriptionsCount >= 2 && libraryItemsCount >= 10
 }

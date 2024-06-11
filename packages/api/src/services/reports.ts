@@ -11,7 +11,9 @@ export const saveContentDisplayReport = async (
   uid: string,
   input: ReportItemInput
 ): Promise<boolean> => {
-  const item = await findLibraryItemById(input.pageId, uid)
+  const item = await findLibraryItemById(input.pageId, uid, {
+    select: ['id', 'readableContent', 'originalContent', 'originalUrl'],
+  })
   if (!item) {
     logger.info('unable to submit report, item not found', input)
     return false
@@ -23,7 +25,6 @@ export const saveContentDisplayReport = async (
   const report = await getRepository(ContentDisplayReport).save({
     user: { id: uid },
     content: item.readableContent,
-    originalHtml: item.originalContent || undefined,
     originalUrl: item.originalUrl,
     reportComment: input.reportComment,
     libraryItemId: item.id,
@@ -53,7 +54,9 @@ export const saveAbuseReport = async (
   uid: string,
   input: ReportItemInput
 ): Promise<boolean> => {
-  const item = await findLibraryItemById(input.pageId, uid)
+  const item = await findLibraryItemById(input.pageId, uid, {
+    select: ['id'],
+  })
   if (!item) {
     logger.info('unable to submit report, item not found', input)
     return false

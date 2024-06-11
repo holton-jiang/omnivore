@@ -46,6 +46,9 @@ export class LibraryItem {
   @JoinColumn({ name: 'user_id' })
   user!: User
 
+  @Column('uuid')
+  userId!: string
+
   @Column('enum', {
     enum: LibraryItemState,
     default: LibraryItemState.Succeeded,
@@ -204,4 +207,19 @@ export class LibraryItem {
 
   @Column('text')
   highlightAnnotations?: string[]
+
+  @Column('timestamptz')
+  seenAt?: Date
+
+  @Column('ltree')
+  topic?: string
+
+  @Column('timestamptz')
+  digestedAt?: Date
+
+  @Column('float')
+  score?: number
+
+  @Column('text')
+  previewContent?: string
 }

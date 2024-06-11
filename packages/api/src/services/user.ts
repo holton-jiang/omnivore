@@ -60,11 +60,13 @@ export const findActiveUser = async (id: string): Promise<User | null> => {
   return userRepository.findOneBy({ id, status: StatusType.Active })
 }
 
-export const findUsersById = async (ids: string[]): Promise<User[]> => {
+export const findUsersByIds = async (ids: string[]): Promise<User[]> => {
   return userRepository.findBy({ id: In(ids) })
 }
 
-export const deleteUsers = async (criteria: FindOptionsWhere<User>) => {
+export const deleteUsers = async (
+  criteria: FindOptionsWhere<User> | string[]
+) => {
   return authTrx(
     async (t) => t.getRepository(User).delete(criteria),
     undefined,
@@ -147,4 +149,18 @@ export const sendPushNotifications = async (
   }
 
   return sendMulticastPushNotifications(userId, message, notificationType)
+}
+
+export const findUserAndPersonalization = async (id: string) => {
+  return authTrx(
+    (t) =>
+      t.getRepository(User).findOne({
+        where: { id },
+        relations: {
+          userPersonalization: true,
+        },
+      }),
+    undefined,
+    id
+  )
 }

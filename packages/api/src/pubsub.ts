@@ -3,30 +3,19 @@ import express from 'express'
 import { RuleEventType } from './entity/rule'
 import { env } from './env'
 import { ReportType } from './generated/graphql'
-import { FeatureName, findFeatureByName } from './services/features'
 import {
-  enqueueExportItem,
+  enqueueGeneratePreviewContentJob,
   enqueueProcessYouTubeVideo,
+  enqueueScoreJob,
+  enqueueThumbnailJob,
   enqueueTriggerRuleJob,
-  enqueueWebhookJob,
 } from './utils/createTask'
-import { buildLogger } from './utils/logger'
+import { logger } from './utils/logger'
+import { isYouTubeVideoURL } from './utils/youtube'
 
-const logger = buildLogger('pubsub')
+export type EntityEvent = { id: string }
 
 const client = new PubSub()
-
-const isYouTubeVideoURL = (url: string | undefined): boolean => {
-  if (!url) {
-    return false
-  }
-  const u = new URL(url)
-  if (!u.host.endsWith('youtube.com') && !u.host.endsWith('youtu.be')) {
-    return false
-  }
-  const videoId = u.searchParams.get('v')
-  return videoId != null
-}
 
 export const createPubSubClient = (): PubsubClient => {
   const publish = (topicName: string, msg: Buffer): Promise<void> => {
@@ -58,77 +47,88 @@ export const createPubSubClient = (): PubsubClient => {
         Buffer.from(JSON.stringify({ userId, email, name, username }))
       )
     },
-    entityCreated: async <T extends Record<string, any>>(
+    entityCreated: async <T extends EntityEvent>(
       type: EntityType,
       data: T,
-      userId: string,
-      libraryItemId: string
+      userId: string
     ): Promise<void> => {
       // queue trigger rule job
-      if (type === EntityType.PAGE) {
-        await enqueueTriggerRuleJob({
-          userId,
-          ruleEventType: RuleEventType.PageCreated,
-          libraryItemId,
-          data,
-        })
-      }
-      // queue export item job
-      await enqueueExportItem({
-        userId,
-        libraryItemIds: [libraryItemId],
-      })
-
-      await enqueueWebhookJob({
-        userId,
-        type,
-        action: 'created',
+      await enqueueTriggerRuleJob({
+        ruleEventType: `${type.toUpperCase()}_CREATED` as RuleEventType,
         data,
+        userId,
       })
 
-      if (await findFeatureByName(FeatureName.AISummaries, userId)) {
+      if (type === EntityType.ITEM) {
+        // if (await findGrantedFeatureByName(FeatureName.AISummaries, userId)) {
         // await enqueueAISummarizeJob({
         //   userId,
         //   libraryItemId,
         // })
-      }
+        // }
 
-      const isYoutubeVideo = (data: any): data is { originalUrl: string } => {
-        return 'originalUrl' in data
-      }
+        const isItemWithURL = (data: any): data is { originalUrl: string } => {
+          return 'originalUrl' in data
+        }
 
-      if (isYoutubeVideo(data) && isYouTubeVideoURL(data['originalUrl'])) {
-        await enqueueProcessYouTubeVideo({
+        if (isItemWithURL(data) && isYouTubeVideoURL(data['originalUrl'])) {
+          await enqueueProcessYouTubeVideo({
+            userId,
+            libraryItemId: data.id,
+          })
+        }
+
+        await enqueueScoreJob({
           userId,
-          libraryItemId,
+          libraryItemId: data.id,
         })
+
+        const hasThumbnail = (
+          data: any
+        ): data is { thumbnail: string | null } => {
+          return 'thumbnail' in data
+        }
+
+        // we don't want to create thumbnail for imported pages and pages that already have thumbnail
+        if (!hasThumbnail(data) || !data.thumbnail) {
+          try {
+            // create a task to update thumbnail and pre-cache all images
+            const job = await enqueueThumbnailJob(userId, data.id)
+            logger.info('Thumbnail job created', { id: job?.id })
+          } catch (e) {
+            logger.error('Failed to enqueue thumbnail job', e)
+          }
+        }
+
+        const hasPreviewContent = (
+          data: any
+        ): data is { previewContent: string | null } => {
+          return 'previewContent' in data
+        }
+
+        // generate preview content if it is less than 180 characters
+        if (
+          !hasPreviewContent(data) ||
+          (data.previewContent && data.previewContent.length < 180)
+        ) {
+          try {
+            const job = await enqueueGeneratePreviewContentJob(data.id, userId)
+            logger.info('Generate preview job created', { id: job?.id })
+          } catch (e) {
+            logger.error('Failed to enqueue generate preview job', e)
+          }
+        }
       }
     },
-    entityUpdated: async <T extends Record<string, any>>(
+    entityUpdated: async <T extends EntityEvent>(
       type: EntityType,
       data: T,
-      userId: string,
-      libraryItemId: string
+      userId: string
     ): Promise<void> => {
       // queue trigger rule job
-      if (type === EntityType.PAGE) {
-        await enqueueTriggerRuleJob({
-          userId,
-          ruleEventType: RuleEventType.PageUpdated,
-          libraryItemId,
-          data,
-        })
-      }
-      // queue export item job
-      await enqueueExportItem({
+      await enqueueTriggerRuleJob({
         userId,
-        libraryItemIds: [libraryItemId],
-      })
-
-      await enqueueWebhookJob({
-        userId,
-        type,
-        action: 'updated',
+        ruleEventType: `${type.toUpperCase()}_UPDATED` as RuleEventType,
         data,
       })
     },
@@ -157,10 +157,10 @@ export const createPubSubClient = (): PubsubClient => {
 }
 
 export enum EntityType {
-  PAGE = 'page',
-  HIGHLIGHT = 'highlight',
-  LABEL = 'label',
-  RSS_FEED = 'feed',
+  ITEM = 'PAGE',
+  HIGHLIGHT = 'HIGHLIGHT',
+  LABEL = 'LABEL',
+  RSS_FEED = 'FEED',
 }
 
 export interface PubsubClient {
@@ -170,17 +170,15 @@ export interface PubsubClient {
     name: string,
     username: string
   ) => Promise<void>
-  entityCreated: <T extends Record<string, any>>(
+  entityCreated: <T extends EntityEvent>(
     type: EntityType,
     data: T,
-    userId: string,
-    libraryItemId: string
+    userId: string
   ) => Promise<void>
-  entityUpdated: <T extends Record<string, any>>(
+  entityUpdated: <T extends EntityEvent>(
     type: EntityType,
     data: T,
-    userId: string,
-    libraryItemId: string
+    userId: string
   ) => Promise<void>
   entityDeleted: (type: EntityType, id: string, userId: string) => Promise<void>
   reportSubmitted(

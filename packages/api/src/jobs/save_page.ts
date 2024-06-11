@@ -11,14 +11,21 @@ import { userRepository } from '../repository/user'
 import { saveFile } from '../services/save_file'
 import { savePage } from '../services/save_page'
 import { uploadFile } from '../services/upload_file'
-import { logger } from '../utils/logger'
+import { logError, logger } from '../utils/logger'
+import {
+  contentFilePath,
+  downloadFromBucket,
+  downloadFromUrl,
+  isFileExists,
+  uploadToSignedUrl,
+} from '../utils/uploads'
 
 const signToken = promisify(jwt.sign)
 
 const IMPORTER_METRICS_COLLECTOR_URL = env.queue.importerMetricsUrl
 const JWT_SECRET = env.server.jwtSecret
 
-const MAX_ATTEMPTS = 2
+const MAX_IMPORT_ATTEMPTS = 1
 const REQUEST_TIMEOUT = 30000 // 30 seconds
 
 interface Data {
@@ -26,14 +33,18 @@ interface Data {
   url: string
   finalUrl: string
   articleSavingRequestId: string
+  title: string
+  contentType: string
+  savedAt: string
+
   state?: string
   labels?: CreateLabelInput[]
   source: string
   folder: string
   rssFeedUrl?: string
-  savedAt?: string
   publishedAt?: string
   taskId?: string
+  cacheKey?: string
 }
 
 interface FetchResult {
@@ -47,34 +58,22 @@ const isFetchResult = (obj: unknown): obj is FetchResult => {
   return typeof obj === 'object' && obj !== null && 'finalUrl' in obj
 }
 
-const uploadToSignedUrl = async (
-  uploadSignedUrl: string,
-  contentType: string,
-  contentObjUrl: string
-) => {
-  logger.info('uploading to signed url', {
-    uploadSignedUrl,
-    contentType,
-    contentObjUrl,
-  })
-
-  try {
-    const stream = await axios.get(contentObjUrl, {
-      responseType: 'stream',
-      timeout: REQUEST_TIMEOUT,
-    })
-    return await axios.put(uploadSignedUrl, stream.data, {
-      headers: {
-        'Content-Type': contentType,
-      },
-      maxBodyLength: 1000000000,
-      maxContentLength: 100000000,
-      timeout: REQUEST_TIMEOUT,
-    })
-  } catch (error) {
-    logger.error('error uploading to signed url', error)
-    return null
+const getCachedContent = async (key: string): Promise<string | undefined> => {
+  const result = await redisDataSource.redisClient?.get(key)
+  if (!result) {
+    logger.info('fetch result is not cached', { key })
+    return undefined
   }
+
+  const fetchResult = JSON.parse(result) as unknown
+  if (!isFetchResult(fetchResult)) {
+    logger.error('invalid fetch result in cache', { key })
+    return undefined
+  }
+
+  logger.info('fetch result is cached', { key })
+
+  return fetchResult.content
 }
 
 const uploadPdf = async (
@@ -95,14 +94,25 @@ const uploadPdf = async (
     throw new Error('error while getting upload id and signed url')
   }
 
-  const uploaded = await uploadToSignedUrl(
-    result.uploadSignedUrl,
-    'application/pdf',
-    url
-  )
-  if (!uploaded) {
-    throw new Error('error while uploading pdf')
-  }
+  logger.info('downloading content', {
+    url,
+  })
+
+  const data = await downloadFromUrl(url, REQUEST_TIMEOUT)
+
+  const uploadSignedUrl = result.uploadSignedUrl
+  const contentType = 'application/pdf'
+  logger.info('uploading to signed url', {
+    uploadSignedUrl,
+    contentType,
+  })
+  await uploadToSignedUrl(uploadSignedUrl, data, contentType, REQUEST_TIMEOUT)
+
+  logger.info('pdf uploaded successfully', {
+    url,
+    uploadFileId: result.id,
+    itemId: result.createdPageId,
+  })
 
   return {
     uploadFileId: result.id,
@@ -134,34 +144,8 @@ const sendImportStatusUpdate = async (
       }
     )
   } catch (e) {
-    logger.error('error while sending import status update', e)
+    logError(e)
   }
-}
-
-const getCachedFetchResult = async (url: string) => {
-  const key = `fetch-result:${url}`
-  if (!redisDataSource.redisClient || !redisDataSource.workerRedisClient) {
-    throw new Error('redis client is not initialized')
-  }
-
-  let result = await redisDataSource.redisClient.get(key)
-  if (!result) {
-    logger.debug(`fetch result is not cached in cache redis ${url}`)
-    // fallback to worker redis client if the result is not found
-    result = await redisDataSource.workerRedisClient.get(key)
-    if (!result) {
-      throw new Error('fetch result is not cached')
-    }
-  }
-
-  const fetchResult = JSON.parse(result) as unknown
-  if (!isFetchResult(fetchResult)) {
-    throw new Error('fetch result is not valid')
-  }
-
-  logger.info('fetch result is cached', url)
-
-  return fetchResult
 }
 
 export const savePageJob = async (data: Data, attemptsMade: number) => {
@@ -177,33 +161,30 @@ export const savePageJob = async (data: Data, attemptsMade: number) => {
     taskId,
     url,
     finalUrl,
+    title,
+    contentType,
+    state,
+    cacheKey,
   } = data
-  let isImported,
-    isSaved,
-    state = data.state
+  let isImported, isSaved
 
-  try {
-    logger.info('savePageJob', {
+  logger.info('savePageJob', {
+    userId,
+    url,
+    finalUrl,
+  })
+
+  const user = await userRepository.findById(userId)
+  if (!user) {
+    logger.error('Unable to save job, user can not be found.', {
       userId,
       url,
-      finalUrl,
     })
+    // if the user is not found, we do not retry
+    return false
+  }
 
-    // get the fetch result from cache
-    const fetchedResult = await getCachedFetchResult(finalUrl)
-    const { title, contentType } = fetchedResult
-    let content = fetchedResult.content
-
-    const user = await userRepository.findById(userId)
-    if (!user) {
-      logger.error('Unable to save job, user can not be found.', {
-        userId,
-        url,
-      })
-      // if the user is not found, we do not retry
-      return false
-    }
-
+  try {
     // for pdf content, we need to upload the pdf
     if (contentType === 'application/pdf') {
       const uploadResult = await uploadPdf(
@@ -216,7 +197,7 @@ export const savePageJob = async (data: Data, attemptsMade: number) => {
         {
           url: finalUrl,
           uploadFileId: uploadResult.uploadFileId,
-          state: state ? (state as ArticleSavingRequestStatus) : undefined,
+          state: (state as ArticleSavingRequestStatus) || undefined,
           labels,
           source,
           folder,
@@ -236,27 +217,63 @@ export const savePageJob = async (data: Data, attemptsMade: number) => {
       return true
     }
 
-    if (!content) {
-      logger.info(`content is not fetched: ${finalUrl}`)
-      // set the state to failed if we don't have content
-      content = 'Failed to fetch content'
-      state = ArticleSavingRequestStatus.Failed
+    let content
+
+    if (cacheKey) {
+      logger.info('fetching content from cache', {
+        cacheKey,
+      })
+      content = await getCachedContent(cacheKey)
+
+      if (content) {
+        logger.info('fetched content from cache')
+      }
     }
 
-    // for non-pdf content, we need to save the page
+    if (!content) {
+      logger.info(
+        'content not found from cache, downloading content from GCS',
+        {
+          url,
+        }
+      )
+
+      // download the original content
+      const filePath = contentFilePath({
+        userId,
+        libraryItemId: articleSavingRequestId,
+        format: 'original',
+        savedAt: new Date(savedAt),
+      })
+      const exists = await isFileExists(filePath)
+      if (!exists) {
+        logger.error('Original content file does not exist', {
+          finalUrl,
+          filePath,
+        })
+
+        throw new Error('Original content file does not exist')
+      }
+
+      content = (await downloadFromBucket(filePath)).toString()
+      logger.info('Downloaded original content from:', { filePath })
+    }
+
+    // for non-pdf content, we need to save the content
     const result = await savePage(
       {
         url: finalUrl,
         clientRequestId: articleSavingRequestId,
         title,
         originalContent: content,
-        state: state ? (state as ArticleSavingRequestStatus) : undefined,
-        labels: labels,
+        state: (state as ArticleSavingRequestStatus) || undefined,
+        labels,
         rssFeedUrl,
-        savedAt: savedAt ? new Date(savedAt) : new Date(),
+        savedAt,
         publishedAt: publishedAt ? new Date(publishedAt) : null,
         source,
         folder,
+        originalContentUploaded: true,
       },
       user
     )
@@ -268,20 +285,14 @@ export const savePageJob = async (data: Data, attemptsMade: number) => {
     isImported = true
     isSaved = true
   } catch (e) {
-    if (e instanceof Error) {
-      logger.error(`error while saving page: ${e.message}`)
-    } else {
-      logger.error('error while saving page: unknown error')
-    }
+    logError(e)
 
     throw e
   } finally {
-    const lastAttempt = attemptsMade === MAX_ATTEMPTS - 1
-    if (lastAttempt) {
-      logger.info(`last attempt reached ${data.url}`)
-    }
+    const lastAttempt = attemptsMade + 1 === MAX_IMPORT_ATTEMPTS
 
     if (taskId && (isSaved || lastAttempt)) {
+      logger.info('sending import status update')
       // send import status to update the metrics for importer
       await sendImportStatusUpdate(userId, taskId, isImported)
     }

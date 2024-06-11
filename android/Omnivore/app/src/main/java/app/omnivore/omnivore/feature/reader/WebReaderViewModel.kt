@@ -8,10 +8,7 @@ import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat.startActivity
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import app.omnivore.omnivore.R
 import app.omnivore.omnivore.core.analytics.EventTracker
@@ -28,22 +25,36 @@ import app.omnivore.omnivore.core.database.dao.SavedItemDao
 import app.omnivore.omnivore.core.database.entities.SavedItem
 import app.omnivore.omnivore.core.database.entities.SavedItemLabel
 import app.omnivore.omnivore.core.datastore.DatastoreRepository
+import app.omnivore.omnivore.core.datastore.preferredTheme
+import app.omnivore.omnivore.core.datastore.preferredWebFontFamily
+import app.omnivore.omnivore.core.datastore.preferredWebFontSize
+import app.omnivore.omnivore.core.datastore.preferredWebLineHeight
+import app.omnivore.omnivore.core.datastore.preferredWebMaxWidthPercentage
+import app.omnivore.omnivore.core.datastore.prefersJustifyText
+import app.omnivore.omnivore.core.datastore.prefersWebHighContrastText
+import app.omnivore.omnivore.core.datastore.volumeForScroll
 import app.omnivore.omnivore.core.network.Networker
 import app.omnivore.omnivore.core.network.createNewLabel
+import app.omnivore.omnivore.core.network.loadLibraryItemContent
 import app.omnivore.omnivore.core.network.saveUrl
 import app.omnivore.omnivore.core.network.savedItem
 import app.omnivore.omnivore.feature.components.HighlightColor
 import app.omnivore.omnivore.feature.library.SavedItemAction
-import app.omnivore.omnivore.feature.setSavedItemLabels
 import app.omnivore.omnivore.graphql.generated.type.CreateLabelInput
-import app.omnivore.omnivore.utils.DatastoreKeys
 import com.apollographql.apollo3.api.Optional.Companion.presentIfNotNull
 import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -77,38 +88,39 @@ enum class Themes(
 
 @HiltViewModel
 class WebReaderViewModel @Inject constructor(
-    private val datastoreRepo: DatastoreRepository,
+    private val datastoreRepository: DatastoreRepository,
     private val dataService: DataService,
     private val networker: Networker,
     private val eventTracker: EventTracker,
-    private val savedItemDao: SavedItemDao // TODO - Use repo
+    private val savedItemDao: SavedItemDao,
+    @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
     var lastJavascriptActionLoopUUID: UUID = UUID.randomUUID()
     var javascriptDispatchQueue: MutableList<String> = mutableListOf()
     var maxToolbarHeightPx = 0.0f
 
-    val webReaderParamsLiveData = MutableLiveData<WebReaderParams?>(null)
+    val webReaderParamsFlow = MutableStateFlow<WebReaderParams?>(null)
     var annotation: String? = null
-    val javascriptActionLoopUUIDLiveData = MutableLiveData(lastJavascriptActionLoopUUID)
-    val shouldPopViewLiveData = MutableLiveData(false)
-    val hasFetchError = MutableLiveData(false)
-    val currentToolbarHeightLiveData = MutableLiveData(0.0f)
-    val savedItemLabelsLiveData = dataService.db.savedItemLabelDao().getSavedItemLabelsLiveData()
+    val javascriptActionLoopUUIDFlow = MutableStateFlow(lastJavascriptActionLoopUUID)
+    val shouldPopViewFlow = MutableStateFlow(false)
+    val hasFetchError = MutableStateFlow(false)
+    val currentToolbarHeightFlow = MutableStateFlow(0.0f)
+    val savedItemLabelsFlow = dataService.db.savedItemLabelDao().getSavedItemLabelsFlow()
 
     var currentLink: Uri? = null
-    val bottomSheetStateLiveData = MutableLiveData(BottomSheetState.NONE)
+    val bottomSheetStateFlow = MutableStateFlow(BottomSheetState.NONE)
 
     var hasTappedExistingHighlight = false
     var lastTapCoordinates: TapCoordinates? = null
     private var isLoading = false
     private var slug: String? = null
 
-    private val showHighlightColorPalette = MutableLiveData(false)
-    val highlightColor = MutableLiveData(HighlightColor())
+    private val showHighlightColorPalette = MutableStateFlow(false)
+    val highlightColor = MutableStateFlow(HighlightColor())
 
     fun loadItem(slug: String?, requestID: String?) {
         this.slug = slug
-        if (isLoading || webReaderParamsLiveData.value != null) {
+        if (isLoading || webReaderParamsFlow.value != null) {
             return
         }
         isLoading = true
@@ -124,33 +136,36 @@ class WebReaderViewModel @Inject constructor(
         onScrollChange(maxToolbarHeightPx)
     }
 
-    fun setBottomSheet(state: BottomSheetState) {
-        bottomSheetStateLiveData.postValue(state)
+    fun setBottomSheet(state: BottomSheetState) = viewModelScope.launch {
+        bottomSheetStateFlow.update { state }
     }
 
-    fun resetBottomSheet() {
-        bottomSheetStateLiveData.postValue(BottomSheetState.NONE)
+    fun resetBottomSheet() = viewModelScope.launch {
+        bottomSheetStateFlow.update { BottomSheetState.NONE }
     }
 
     fun showOpenLinkSheet(context: Context, uri: Uri) {
-        webReaderParamsLiveData.value?.let {
+        webReaderParamsFlow.value?.let {
             if (it.item.pageURLString == uri.toString()) {
                 openLink(context, uri)
             } else {
                 currentLink = uri
-                bottomSheetStateLiveData.postValue(BottomSheetState.LINK)
+                viewModelScope.launch {
+                    bottomSheetStateFlow.update { BottomSheetState.LINK }
+                }
             }
         }
     }
 
     fun showShareLinkSheet(context: Context) {
-        webReaderParamsLiveData.value?.let {
-            val browserIntent = Intent(Intent.ACTION_SEND)
+        webReaderParamsFlow.value?.let {
+            val sendIntent = Intent(Intent.ACTION_SEND)
 
-            browserIntent.setType("text/plain")
-            browserIntent.putExtra(Intent.EXTRA_TEXT, it.item.pageURLString)
-            browserIntent.putExtra(Intent.EXTRA_SUBJECT, it.item.pageURLString)
-            context.startActivity(browserIntent)
+            sendIntent.setType("text/plain")
+            sendIntent.putExtra(Intent.EXTRA_TEXT, it.item.pageURLString)
+            sendIntent.putExtra(Intent.EXTRA_SUBJECT, it.item.title)
+            val shareIntent = Intent.createChooser(sendIntent, null)
+            context.startActivity(shareIntent)
         }
     }
 
@@ -158,7 +173,9 @@ class WebReaderViewModel @Inject constructor(
         currentLink?.let {
             openLink(context, it)
         }
-        bottomSheetStateLiveData.postValue(BottomSheetState.NONE)
+        viewModelScope.launch {
+            bottomSheetStateFlow.update { BottomSheetState.NONE }
+        }
     }
 
     private fun openLink(context: Context, uri: Uri) {
@@ -166,20 +183,18 @@ class WebReaderViewModel @Inject constructor(
         startActivity(context, browserIntent, null)
     }
 
-    fun saveCurrentLink(context: Context) {
+    fun saveCurrentLink(context: Context) = viewModelScope.launch {
         currentLink?.let {
-            viewModelScope.launch {
-                val success = networker.saveUrl(it)
-                Toast.makeText(
-                    context,
-                    if (success)
-                        context.getString(R.string.web_reader_view_model_save_link_success) else
-                        context.getString(R.string.web_reader_view_model_save_link_error),
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+            val success = networker.saveUrl(it)
+            Toast.makeText(
+                context,
+                if (success)
+                    context.getString(R.string.web_reader_view_model_save_link_success) else
+                    context.getString(R.string.web_reader_view_model_save_link_error),
+                Toast.LENGTH_SHORT
+            ).show()
         }
-        bottomSheetStateLiveData.postValue(BottomSheetState.NONE)
+        bottomSheetStateFlow.update { BottomSheetState.NONE }
     }
 
     fun copyCurrentLink(context: Context) {
@@ -197,12 +212,12 @@ class WebReaderViewModel @Inject constructor(
                 ).show()
             }
         }
-        bottomSheetStateLiveData.postValue(BottomSheetState.NONE)
+        bottomSheetStateFlow.update { BottomSheetState.NONE }
     }
 
     fun onScrollChange(delta: Float) {
-        val newHeight = (currentToolbarHeightLiveData.value ?: 0.0f) + delta
-        currentToolbarHeightLiveData.value = newHeight.coerceIn(0f, maxToolbarHeightPx)
+        val newHeight = (currentToolbarHeightFlow.value) + delta
+        currentToolbarHeightFlow.value = newHeight.coerceIn(0f, maxToolbarHeightPx)
     }
 
     private suspend fun loadItemUsingSlug(slug: String) {
@@ -220,7 +235,7 @@ class WebReaderViewModel @Inject constructor(
                     .putValue("originalArticleURL", webReaderParams.item.pageURLString)
                     .putValue("loaded_from", "network")
             )
-            webReaderParamsLiveData.postValue(webReaderParams)
+            webReaderParamsFlow.update { webReaderParams }
             isLoading = false
         }
     }
@@ -239,14 +254,14 @@ class WebReaderViewModel @Inject constructor(
                     .putValue("originalArticleURL", webReaderParams.item.pageURLString)
                     .putValue("loaded_from", "request_id")
             )
-            webReaderParamsLiveData.postValue(webReaderParams)
+            webReaderParamsFlow.update {  (webReaderParams) }
             isLoading = false
         } else if (requestCount < 7) {
             // delay then try again
             delay(2000L)
             loadItemUsingRequestID(requestID = requestID, requestCount = requestCount + 1)
         } else {
-            hasFetchError.postValue(true)
+            hasFetchError.update { true }
         }
     }
 
@@ -254,49 +269,51 @@ class WebReaderViewModel @Inject constructor(
         withContext(Dispatchers.IO) {
             val persistedItem =
                 dataService.db.savedItemDao().getSavedItemWithLabelsAndHighlights(slug)
+            val savedItemId = persistedItem?.savedItem?.savedItemId
+            if (savedItemId != null) {
+                val htmlContent = loadLibraryItemContent(applicationContext, savedItemId)
+                if (htmlContent != null) {
+                    val articleContent = ArticleContent(
+                        title = persistedItem.savedItem.title,
+                        htmlContent = htmlContent,
+                        highlights = persistedItem.highlights,
+                        contentStatus = "SUCCEEDED",
+                        labelsJSONString = Gson().toJson(persistedItem.labels)
+                    )
 
-            if (persistedItem?.savedItem?.content != null) {
-                val articleContent = ArticleContent(
-                    title = persistedItem.savedItem.title,
-                    htmlContent = persistedItem.savedItem.content,
-                    highlights = persistedItem.highlights,
-                    contentStatus = "SUCCEEDED",
-                    objectID = "",
-                    labelsJSONString = Gson().toJson(persistedItem.labels)
-                )
+                    val webReaderParams = WebReaderParams(
+                        persistedItem.savedItem,
+                        articleContent,
+                        persistedItem.labels
+                    )
 
-                val webReaderParams = WebReaderParams(
-                    persistedItem.savedItem,
-                    articleContent,
-                    persistedItem.labels
-                )
-
-                Log.d("sync", "data loaded from db")
-                eventTracker.track(
-                    "link_read",
-                    com.posthog.android.Properties()
-                        .putValue("linkID", webReaderParams.item.savedItemId)
-                        .putValue("slug", webReaderParams.item.slug)
-                        .putValue("originalArticleURL", webReaderParams.item.pageURLString)
-                        .putValue("loaded_from", "db")
-                )
-                webReaderParamsLiveData.postValue(webReaderParams)
+                    Log.d("sync", "data loaded from db")
+                    eventTracker.track(
+                        "link_read",
+                        com.posthog.android.Properties()
+                            .putValue("linkID", webReaderParams.item.savedItemId)
+                            .putValue("slug", webReaderParams.item.slug)
+                            .putValue("originalArticleURL", webReaderParams.item.pageURLString)
+                            .putValue("loaded_from", "db")
+                    )
+                    webReaderParamsFlow.update { webReaderParams }
+                }
             }
             isLoading = false
         }
     }
 
     private suspend fun loadItemFromServer(slug: String): WebReaderParams? {
-        val articleQueryResult = networker.savedItem(slug)
+        val articleQueryResult = networker.savedItem(context = applicationContext, slug)
 
         val article = articleQueryResult.item ?: return null
+        val htmlContent = loadLibraryItemContent(applicationContext, article.savedItemId)
 
         val articleContent = ArticleContent(
             title = article.title,
-            htmlContent = article.content ?: "",
+            htmlContent = htmlContent ?: "",
             highlights = articleQueryResult.highlights,
             contentStatus = articleQueryResult.state,
-            objectID = "",
             labelsJSONString = Gson().toJson(articleQueryResult.labels)
         )
 
@@ -327,11 +344,11 @@ class WebReaderViewModel @Inject constructor(
             }
 
             SavedItemAction.EditLabels -> {
-                bottomSheetStateLiveData.postValue(BottomSheetState.LABELS)
+                bottomSheetStateFlow.update { BottomSheetState.LABELS }
             }
 
             SavedItemAction.EditInfo -> {
-                bottomSheetStateLiveData.postValue(BottomSheetState.EDIT_INFO)
+                bottomSheetStateFlow.update { BottomSheetState.EDIT_INFO }
             }
 
             SavedItemAction.MarkRead -> {
@@ -344,22 +361,18 @@ class WebReaderViewModel @Inject constructor(
         }
     }
 
-    private fun popToLibraryView() {
-        CoroutineScope(Dispatchers.Main).launch {
-            shouldPopViewLiveData.postValue(true)
-        }
+    private fun popToLibraryView() = viewModelScope.launch {
+            shouldPopViewFlow.update { true }
     }
 
 
-    fun showHighlightColorPalette() {
-        CoroutineScope(Dispatchers.Main).launch {
-            showHighlightColorPalette.postValue(true)
-        }
+    fun showHighlightColorPalette() = viewModelScope.launch {
+            showHighlightColorPalette.update { true }
     }
 
     fun hideHighlightColorPalette() {
         CoroutineScope(Dispatchers.Main).launch {
-            showHighlightColorPalette.postValue(false)
+            showHighlightColorPalette.update { false }
         }
     }
 
@@ -368,7 +381,7 @@ class WebReaderViewModel @Inject constructor(
         when (actionID) {
             "createHighlight" -> {
                 viewModelScope.launch {
-                    dataService.createWebHighlight(jsonString, highlightColor.value?.name)
+                    dataService.createWebHighlight(jsonString, highlightColor.value.name)
                 }
             }
 
@@ -396,7 +409,7 @@ class WebReaderViewModel @Inject constructor(
                         .fromJson(jsonString, AnnotationWebViewMessage::class.java)
                         .annotation ?: ""
                     annotation = annotationStr
-                    bottomSheetStateLiveData.postValue(BottomSheetState.HIGHLIGHTNOTE)
+                    bottomSheetStateFlow.update { BottomSheetState.HIGHLIGHTNOTE }
                 }
             }
 
@@ -417,11 +430,11 @@ class WebReaderViewModel @Inject constructor(
     }
 
     fun resetJavascriptDispatchQueue() {
-        lastJavascriptActionLoopUUID = javascriptActionLoopUUIDLiveData.value ?: UUID.randomUUID()
+        lastJavascriptActionLoopUUID = javascriptActionLoopUUIDFlow.value
         javascriptDispatchQueue = mutableListOf()
     }
 
-    fun saveAnnotation(annotation: String) {
+    fun saveAnnotation(annotation: String) = viewModelScope.launch {
         val jsonAnnotation = Gson().toJson(annotation)
         val script =
             "var event = new Event('saveAnnotation');event.annotation = $jsonAnnotation;document.dispatchEvent(event);"
@@ -432,7 +445,7 @@ class WebReaderViewModel @Inject constructor(
         cancelAnnotationEdit()
     }
 
-    fun cancelAnnotation() {
+    fun cancelAnnotation() = viewModelScope.launch {
         val script = "var event = new Event('dismissHighlight');document.dispatchEvent(event);"
 
         enqueueScript(script)
@@ -446,30 +459,29 @@ class WebReaderViewModel @Inject constructor(
 
     private fun enqueueScript(javascript: String) {
         javascriptDispatchQueue.add(javascript)
-        javascriptActionLoopUUIDLiveData.value = UUID.randomUUID()
+        javascriptActionLoopUUIDFlow.value = UUID.randomUUID()
     }
 
-    val currentThemeKey: LiveData<String> = datastoreRepo
+    val currentThemeKey: Flow<String> = datastoreRepository
         .themeKeyFlow
         .distinctUntilChanged()
-        .asLiveData()
 
     fun storedWebPreferences(isDarkMode: Boolean): WebPreferences = runBlocking {
-        val storedFontSize = datastoreRepo.getInt(DatastoreKeys.preferredWebFontSize)
-        val storedLineHeight = datastoreRepo.getInt(DatastoreKeys.preferredWebLineHeight)
-        val storedMaxWidth = datastoreRepo.getInt(DatastoreKeys.preferredWebMaxWidthPercentage)
+        val storedFontSize = datastoreRepository.getInt(preferredWebFontSize)
+        val storedLineHeight = datastoreRepository.getInt(preferredWebLineHeight)
+        val storedMaxWidth = datastoreRepository.getInt(preferredWebMaxWidthPercentage)
 
         val storedFontFamily =
-            datastoreRepo.getString(DatastoreKeys.preferredWebFontFamily) ?: WebFont.SYSTEM.rawValue
+            datastoreRepository.getString(preferredWebFontFamily) ?: WebFont.SYSTEM.rawValue
         val storedThemePreference =
-            datastoreRepo.getString(DatastoreKeys.preferredTheme) ?: "System"
+            datastoreRepository.getString(preferredTheme) ?: "System"
         val storedWebFont =
-            WebFont.values().firstOrNull { it.rawValue == storedFontFamily } ?: WebFont.values()
+            WebFont.entries.firstOrNull { it.rawValue == storedFontFamily } ?: WebFont.entries
                 .first()
 
         val prefersHighContrastFont =
-            datastoreRepo.getString(DatastoreKeys.prefersWebHighContrastText) == "true"
-        val prefersJustifyText = datastoreRepo.getString(DatastoreKeys.prefersJustifyText) == "true"
+            datastoreRepository.getString(prefersWebHighContrastText) == "true"
+        val prefersJustifyText = datastoreRepository.getString(prefersJustifyText) == "true"
 
         WebPreferences(
             textFontSize = storedFontSize ?: 12,
@@ -495,7 +507,7 @@ class WebReaderViewModel @Inject constructor(
         Log.d("theme", "Setting theme key: $newThemeKey")
 
         runBlocking {
-            datastoreRepo.putString(DatastoreKeys.preferredTheme, newThemeKey)
+            datastoreRepository.putString(preferredTheme, newThemeKey)
         }
 
         val script =
@@ -505,7 +517,7 @@ class WebReaderViewModel @Inject constructor(
 
     fun setFontSize(newFontSize: Int) {
         runBlocking {
-            datastoreRepo.putInt(DatastoreKeys.preferredWebFontSize, newFontSize)
+            datastoreRepository.putInt(preferredWebFontSize, newFontSize)
         }
         val script =
             "var event = new Event('updateFontSize');event.fontSize = '$newFontSize';document.dispatchEvent(event);"
@@ -514,8 +526,8 @@ class WebReaderViewModel @Inject constructor(
 
     fun setMaxWidthPercentage(newMaxWidthPercentageValue: Int) {
         runBlocking {
-            datastoreRepo.putInt(
-                DatastoreKeys.preferredWebMaxWidthPercentage,
+            datastoreRepository.putInt(
+                preferredWebMaxWidthPercentage,
                 newMaxWidthPercentageValue
             )
         }
@@ -526,7 +538,7 @@ class WebReaderViewModel @Inject constructor(
 
     fun setLineHeight(newLineHeight: Int) {
         runBlocking {
-            datastoreRepo.putInt(DatastoreKeys.preferredWebLineHeight, newLineHeight)
+            datastoreRepository.putInt(preferredWebLineHeight, newLineHeight)
         }
         val script =
             "var event = new Event('updateLineHeight');event.lineHeight = '$newLineHeight';document.dispatchEvent(event);"
@@ -535,8 +547,8 @@ class WebReaderViewModel @Inject constructor(
 
     fun updateHighContrastTextPreference(prefersHighContrastText: Boolean) {
         runBlocking {
-            datastoreRepo.putString(
-                DatastoreKeys.prefersWebHighContrastText,
+            datastoreRepository.putString(
+                prefersWebHighContrastText,
                 prefersHighContrastText.toString()
             )
         }
@@ -548,16 +560,30 @@ class WebReaderViewModel @Inject constructor(
 
     fun updateJustifyText(justifyText: Boolean) {
         runBlocking {
-            datastoreRepo.putString(DatastoreKeys.prefersJustifyText, justifyText.toString())
+            datastoreRepository.putString(prefersJustifyText, justifyText.toString())
         }
         val script =
             "var event = new Event('updateJustifyText');event.justifyText = $justifyText;document.dispatchEvent(event);"
         enqueueScript(script)
     }
 
+    val volumeRockerForScrollState: StateFlow<Boolean> = datastoreRepository.getBoolean(
+        volumeForScroll
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Lazily,
+        initialValue = false
+    )
+
+    fun setVolumeRockerForScrollState(value: Boolean) {
+        viewModelScope.launch {
+            datastoreRepository.putBoolean(volumeForScroll, value)
+        }
+    }
+
     fun applyWebFont(font: WebFont) {
         runBlocking {
-            datastoreRepo.putString(DatastoreKeys.preferredWebFontFamily, font.rawValue)
+            datastoreRepository.putString(preferredWebFontFamily, font.rawValue)
         }
 
         val script =
@@ -583,9 +609,7 @@ class WebReaderViewModel @Inject constructor(
                 // Send labels to webview
                 val script =
                     "var event = new Event('updateLabels');event.labels = ${Gson().toJson(labels)};document.dispatchEvent(event);"
-                CoroutineScope(Dispatchers.Main).launch {
-                    enqueueScript(script)
-                }
+                enqueueScript(script)
             }
         }
     }
@@ -596,7 +620,7 @@ class WebReaderViewModel @Inject constructor(
                 loadItemFromDB(it)
             }
 
-            webReaderParamsLiveData.value?.item?.title?.let {
+            webReaderParamsFlow.value?.item?.title?.let {
                 updateItemTitleInWebView(it)
             }
         }

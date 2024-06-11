@@ -27,6 +27,7 @@ struct WebReaderContainerView: View {
   @State var annotationSaveTransactionID: UUID?
   @State var showNavBarActionID: UUID?
   @State var showExpandedAudioPlayer = false
+  @State var showLibraryDigest = false
   @State var shareActionID: UUID?
   @State var annotation = String()
   @State private var bottomBarOpacity = 0.0
@@ -40,6 +41,10 @@ struct WebReaderContainerView: View {
   @State var safariWebLink: SafariWebLink?
   @State var displayLinkSheet = false
   @State var linkToOpen: URL?
+
+  @State var showExplainSheet = false
+
+  @State var handoffActivity: NSUserActivity?
 
   @EnvironmentObject var dataService: DataService
   @EnvironmentObject var audioController: AudioController
@@ -92,6 +97,11 @@ struct WebReaderContainerView: View {
     }
   }
 
+  private func explainHandler(text: String) {
+    viewModel.explainText = String(text)
+    showExplainSheet = true
+  }
+
   private func handleHighlightAction(message: WKScriptMessage) {
     guard let messageBody = message.body as? [String: String] else { return }
     guard let actionID = messageBody["actionID"] else { return }
@@ -126,7 +136,7 @@ struct WebReaderContainerView: View {
 
   #if os(iOS)
     var audioNavbarItem: some View {
-      if !audioController.playbackError, audioController.isLoadingItem(itemID: item.unwrappedID) {
+      if audioController.isLoadingItem(audioController.itemAudioProperties) {
         return AnyView(ProgressView()
           .padding(.horizontal))
       } else {
@@ -271,6 +281,13 @@ struct WebReaderContainerView: View {
         Spacer()
       #endif
 
+//      Button(
+//        action: { showExplainSheet = true },
+//        label: { Image(systemName: "sparkles") }
+//      )
+//      .buttonStyle(.plain)
+//      .padding(.trailing, 4)
+
       Button(
         action: { showLabelsModal = true },
         label: {
@@ -308,10 +325,13 @@ struct WebReaderContainerView: View {
         .padding(.trailing, 5)
         .popover(isPresented: $showPreferencesPopover) {
           webPreferencesPopoverView
-            .frame(maxWidth: 400, maxHeight: 475)
+            .frame(width: 400, height: 475)
         }
         .formSheet(isPresented: $showPreferencesFormsheet, modalSize: CGSize(width: 400, height: 475)) {
           webPreferencesPopoverView
+        }
+        .formSheet(isPresented: $showExplainSheet, modalSize: CGSize(width: 400, height: 475)) {
+          explainView
         }
       #endif
 
@@ -358,6 +378,10 @@ struct WebReaderContainerView: View {
     }
   #endif
 
+  var explainView: some View {
+    ExplainView(dataService: dataService, text: viewModel.explainText ?? "Nothing to explain", item: item)
+  }
+
   var body: some View {
     ZStack {
       if let articleContent = viewModel.articleContent {
@@ -378,6 +402,7 @@ struct WebReaderContainerView: View {
             #endif
           },
           tapHandler: tapHandler,
+          explainHandler: dataService.featureFlags.explainEnabled ? explainHandler : nil,
           scrollPercentHandler: scrollPercentHandler,
           webViewActionHandler: webViewActionHandler,
           navBarVisibilityUpdater: { visible in
@@ -399,31 +424,48 @@ struct WebReaderContainerView: View {
           .statusBar(hidden: prefersHideStatusBarInReader)
         #endif
         .onAppear {
+          startUserActivity()
+
           dataService.updateLinkReadingProgress(
             itemID: item.unwrappedID,
             readingProgress: max(item.readingProgress, 0.1),
             anchorIndex: Int(item.readingProgressAnchor),
             force: false
           )
-          Task {
-            await audioController.preload(itemIDs: [item.unwrappedID])
-          }
           viewModel.trackReadEvent(item: item)
+
+          // Wait 1.5s while loading the reader before attempting to preload the speech file
+          DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1500)) {
+            Task {
+              await audioController.preload(itemIDs: [item.unwrappedID])
+            }
+          }
+        }
+        .onDisappear {
+          stopUserActivity()
         }
         .confirmationDialog(linkToOpen?.absoluteString ?? "", isPresented: $displayLinkSheet,
                             titleVisibility: .visible) {
           Button(action: {
             if let linkToOpen = linkToOpen {
-              safariWebLink = SafariWebLink(id: UUID(), url: linkToOpen)
+              if UserDefaults.standard.string(forKey: UserDefaultKey.openExternalLinksIn.rawValue) == OpenLinkIn.systemBrowser.rawValue, UIApplication.shared.canOpenURL(linkToOpen) {
+                UIApplication.shared.open(linkToOpen)
+              } else {
+                safariWebLink = SafariWebLink(id: UUID(), url: linkToOpen)
+              }
             }
           }, label: { Text(LocalText.genericOpen) })
           Button(action: {
-            #if os(iOS)
-              UIPasteboard.general.string = item.unwrappedPageURLString
-            #else
-              //            Pasteboard.general.string = item.unwrappedPageURLString TODO: fix for mac
-            #endif
-            Snackbar.show(message: "Link copied", dismissAfter: 2000)
+            if let linkToOpen = linkToOpen?.absoluteString {
+#if os(iOS)
+              UIPasteboard.general.string = linkToOpen
+#else
+              // Pasteboard.general.string = item.unwrappedPageURLString TODO: fix for mac
+#endif
+              Snackbar.show(message: "Link copied", dismissAfter: 2000)
+            } else {
+              Snackbar.show(message: "Error copying link", dismissAfter: 2000)
+            }
           }, label: { Text(LocalText.readerCopyLink) })
           Button(action: {
             if let linkToOpen = linkToOpen {
@@ -448,6 +490,15 @@ struct WebReaderContainerView: View {
             }, viewArticle: { _ in
               showExpandedAudioPlayer = false
             })
+          }
+          .fullScreenCover(isPresented: $showLibraryDigest) {
+            if #available(iOS 17.0, *) {
+              NavigationView {
+                FullScreenDigestView(dataService: dataService, audioController: audioController)
+              }
+            } else {
+              Text("Sorry digest is only available on iOS 17 and above")
+            }
           }
         #endif
         .alert(errorAlertMessage ?? LocalText.readerError, isPresented: $showErrorAlertMessage) {
@@ -588,13 +639,17 @@ struct WebReaderContainerView: View {
             .offset(y: navBarVisible ? 0 : -150)
 
           Spacer()
-          if let audioProperties = audioController.itemAudioProperties {
-            MiniPlayerViewer(itemAudioProperties: audioProperties)
+          if audioController.itemAudioProperties != nil {
+            MiniPlayerViewer()
               .padding(.top, 10)
               .padding(.bottom, showBottomBar ? 10 : 40)
               .background(Color.themeTabBarColor)
               .onTapGesture {
-                showExpandedAudioPlayer = true
+                if audioController.itemAudioProperties?.audioItemType == .digest {
+                  showLibraryDigest = true
+                } else {
+                  showExpandedAudioPlayer = true
+                }
               }
           }
           if showBottomBar {
@@ -621,7 +676,6 @@ struct WebReaderContainerView: View {
       try? WebViewManager.shared().dispatchEvent(.saveReadPosition)
     }
     .onDisappear {
-      // WebViewManager.shared().loadHTMLString("<html></html>", baseURL: nil)
       WebViewManager.shared().loadHTMLString(WebReaderContent.emptyContent(isDark: Color.isDarkMode), baseURL: nil)
     }
     .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PopToRoot"))) { _ in
@@ -661,8 +715,8 @@ struct WebReaderContainerView: View {
   func share() {
     shareActionID = UUID()
   }
-  
-  func print() {
+
+  func printReader() {
     shareActionID = UUID()
   }
 
@@ -704,5 +758,24 @@ struct WebReaderContainerView: View {
     else { return }
 
     openURL(url)
+  }
+
+  func startUserActivity() {
+    if let slug = item.slug,
+       let webpageURL = URL(string: "\(dataService.appEnvironment.webAppBaseURL)/me/\(slug)") {
+      let activity = NSUserActivity(activityType: "com.omnivore.omnivore.openURL")
+      activity.title = "Open in browser"
+      activity.webpageURL = webpageURL
+      activity.isEligibleForHandoff = true
+      activity.becomeCurrent()
+      handoffActivity = activity
+    }
+  }
+
+  func stopUserActivity() {
+    self.handoffActivity = nil
+    Task {
+      await NSUserActivity.deleteAllSavedUserActivities()
+    }
   }
 }

@@ -46,9 +46,12 @@ export const labelRepository = appDataSource.getRepository(Label).extend({
     return this.findOneBy({ id })
   },
 
-  findByName(name: string) {
+  findByName(name: string, userId: string) {
     return this.createQueryBuilder()
-      .where('LOWER(name) = LOWER(:name)', { name }) // case insensitive
+      .where('user_id = :userId AND LOWER(name) = LOWER(:name)', {
+        name,
+        userId,
+      }) // case insensitive
       .getOne()
   },
 
@@ -82,7 +85,8 @@ export const labelRepository = appDataSource.getRepository(Label).extend({
   },
 
   deleteById(id: string) {
-    return this.delete({ id, internal: false })
+    // internal labels can be deleted but it will be recreated when next feed/newsletter saved
+    return this.delete({ id })
   },
 
   updateLabel(id: string, label: QueryDeepPartialEntity<Label>) {

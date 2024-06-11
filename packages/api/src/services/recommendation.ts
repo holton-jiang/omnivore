@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid'
-import { DeepPartial } from 'typeorm'
+import { DeepPartial, In } from 'typeorm'
 import { LibraryItem } from '../entity/library_item'
 import { Recommendation } from '../entity/recommendation'
 import { authTrx } from '../repository'
@@ -9,7 +9,25 @@ import {
   createOrUpdateLibraryItem,
   CreateOrUpdateLibraryItemArgs,
   findLibraryItemByUrl,
+  updateLibraryItem,
 } from './library_item'
+
+export const batchGetRecommendationsFromLibraryItemIds = async (
+  libraryItemIds: readonly string[]
+): Promise<Recommendation[][]> => {
+  const recommendations = await authTrx(async (tx) =>
+    tx.getRepository(Recommendation).find({
+      where: { libraryItem: { id: In(libraryItemIds as string[]) } },
+      relations: ['group', 'recommender'],
+    })
+  )
+
+  return libraryItemIds.map((libraryItemId) =>
+    recommendations.filter(
+      (recommendation) => recommendation.libraryItemId === libraryItemId
+    )
+  )
+}
 
 export const addRecommendation = async (
   item: LibraryItem,
@@ -41,6 +59,7 @@ export const addRecommendation = async (
         uploadFile: item.uploadFile,
         wordCount: item.wordCount,
         publishedAt: item.publishedAt,
+        recommenderNames: [recommendation.group?.name],
       }
 
       recommendedItem = await createOrUpdateLibraryItem(newItem, userId)
@@ -65,6 +84,15 @@ export const addRecommendation = async (
       if (highlights) {
         await createHighlights(highlights, userId)
       }
+    } else {
+      // update the item
+      await updateLibraryItem(
+        recommendedItem.id,
+        {
+          recommenderNames: [recommendation.group?.name],
+        },
+        userId
+      )
     }
 
     await createRecommendation(

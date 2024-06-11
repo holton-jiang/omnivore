@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { StyledText } from '../../elements/StyledText'
 import { Box, HStack, SpanBox, VStack } from '../../elements/LayoutPrimitives'
 import { Button } from '../../elements/Button'
@@ -30,7 +30,8 @@ import { OutlinedLabelChip } from '../../elements/OutlinedLabelChip'
 import { NewsletterIcon } from '../../elements/icons/NewsletterIcon'
 import { Dropdown, DropdownOption } from '../../elements/DropdownElements'
 import { useRouter } from 'next/router'
-import { DiscoverIcon } from "../../elements/icons/DiscoverIcon"
+import { DiscoverIcon } from '../../elements/icons/DiscoverIcon'
+import { escapeQuotes } from '../../../utils/helper'
 
 export const LIBRARY_LEFT_MENU_WIDTH = '275px'
 
@@ -157,9 +158,6 @@ export function LibraryFilterMenu(props: LibraryFilterMenuProps): JSX.Element {
         </Box>
         <LibraryNav {...props} />
         <Shortcuts {...props} />
-        {/* <SavedSearches {...props} savedSearches={savedSearches} />
-        <Subscriptions {...props} subscriptions={subscriptions} />
-        <Labels {...props} labels={labels} /> */}
         <NavMenuFooter {...props} />
         <Box css={{ height: '250px ' }} />
       </Box>
@@ -212,16 +210,16 @@ const LibraryNav = (props: LibraryFilterMenuProps): JSX.Element => {
         filterTerm="in:library use:folders"
         icon={<LibraryIcon color={theme.colors.ctaBlue.toString()} />}
       />
-      <NavButton
+      <NavRedirectButton
         {...props}
         text="Highlights"
-        filterTerm="in:all has:highlights mode:highlights"
+        redirectLocation={'/highlights'}
         icon={<HighlightsIcon color={theme.colors.highlight.toString()} />}
       />
       <NavRedirectButton
         {...props}
         text="Discover"
-        redirectLocation={"/discover"}
+        redirectLocation={'/discover'}
         icon={<DiscoverIcon color={theme.colors.discover.toString()} />}
       />
     </VStack>
@@ -545,7 +543,7 @@ function Subscriptions(
         name: name,
         keywords: '*' + name,
         perform: () => {
-          props.applySearchQuery(`subscription:\"${name}\"`)
+          props.applySearchQuery(`subscription:\"${escapeQuotes(name)}\"`)
         },
       }
     }),
@@ -581,7 +579,9 @@ function Subscriptions(
                 return (
                   <FilterButton
                     key={item.id}
-                    filterTerm={`in:inbox subscription:\"${item.name}\"`}
+                    filterTerm={`in:inbox subscription:\"${escapeQuotes(
+                      item.name
+                    )}\"`}
                     text={item.name}
                     {...props}
                   />
@@ -735,7 +735,7 @@ type NavButtonRedirectProps = {
 }
 
 function NavRedirectButton(props: NavButtonRedirectProps): JSX.Element {
-  const [selected, setSelected] = useState(false);
+  const [selected, setSelected] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -932,7 +932,7 @@ function LabelButton(props: LabelButtonProps): JSX.Element {
   const checkboxRef = useRef<HTMLInputElement | null>(null)
   const state = useMemo(() => {
     const term = props.searchTerm ?? ''
-    if (term.indexOf(`label:\"${props.label.name}\"`) >= 0) {
+    if (term.indexOf(`label:\"${escapeQuotes(props.label.name)}\"`) >= 0) {
       return 'on'
     }
     return 'off'
@@ -982,7 +982,7 @@ function LabelButton(props: LabelButtonProps): JSX.Element {
             props.applySearchQuery(query.trim())
           } else {
             props.applySearchQuery(
-              `${query.trim()} label:\"${props.label.name}\"`
+              `${query.trim()} label:\"${escapeQuotes(props.label.name)}\"`
             )
           }
         }}
@@ -1001,14 +1001,15 @@ function LabelButton(props: LabelButtonProps): JSX.Element {
           type="checkbox"
           checked={state === 'on'}
           onChange={(e) => {
+            const escapedLabelName = escapeQuotes(props.label.name)
             if (e.target.checked) {
               props.applySearchQuery(
-                `${props.searchTerm ?? ''} label:\"${props.label.name}\"`
+                `${props.searchTerm ?? ''} label:\"${escapedLabelName}\"`
               )
             } else {
               const query =
                 props.searchTerm?.replace(
-                  `label:\"${props.label.name}\"`,
+                  `label:\"${escapedLabelName}\"`,
                   ''
                 ) ?? ''
               props.applySearchQuery(query)

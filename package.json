@@ -8,8 +8,8 @@
   ],
   "license": "AGPL-3.0-only",
   "scripts": {
-    "test": "lerna run --no-bail test",
-    "lint": "lerna run lint",
+    "test": "lerna run --stream test",
+    "lint": "lerna run --parallel lint",
     "build": "lerna run build",
     "test:scoped:example": "lerna run test --scope={@omnivore/pdf-handler,@omnivore/web}",
     "gql-typegen": "graphql-codegen",

@@ -4,43 +4,44 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/explicit-module-boundary-types */
 import { createHmac } from 'crypto'
+import { isError } from 'lodash'
+import { Highlight } from '../entity/highlight'
+import { LibraryItem } from '../entity/library_item'
 import {
   EXISTING_NEWSLETTER_FOLDER,
   NewsletterEmail,
 } from '../entity/newsletter_email'
+import { PublicItem } from '../entity/public_item'
+import { Recommendation } from '../entity/recommendation'
 import {
   DEFAULT_SUBSCRIPTION_FOLDER,
   Subscription,
 } from '../entity/subscription'
+import { User as UserEntity } from '../entity/user'
 import { env } from '../env'
 import {
-  Article,
-  Highlight,
-  Label,
+  HomeItem,
+  HomeItemSource,
+  HomeItemSourceType,
   PageType,
-  Recommendation,
-  SearchItem,
   User,
 } from '../generated/graphql'
 import { getAISummary } from '../services/ai-summaries'
 import { findUserFeatures } from '../services/features'
-import { findHighlightsByLibraryItemId } from '../services/highlights'
-import { findLabelsByLibraryItemId } from '../services/labels'
-import { findRecommendationsByLibraryItemId } from '../services/recommendation'
-import { findUploadFileById } from '../services/upload_file'
-import {
-  highlightDataToHighlight,
-  isBase64Image,
-  recommandationDataToRecommendation,
-  validatedDate,
-  wordsCount,
-} from '../utils/helpers'
+import { Merge } from '../util'
+import { isBase64Image, validatedDate, wordsCount } from '../utils/helpers'
 import { createImageProxyUrl } from '../utils/imageproxy'
+import { contentConverter } from '../utils/parser'
 import {
   generateDownloadSignedUrl,
   generateUploadFilePathName,
 } from '../utils/uploads'
-import { emptyTrashResolver, fetchContentResolver } from './article'
+import {
+  ArticleFormat,
+  emptyTrashResolver,
+  fetchContentResolver,
+  PartialLibraryItem,
+} from './article'
 import {
   addDiscoverFeedResolver,
   deleteDiscoverArticleResolver,
@@ -51,6 +52,12 @@ import {
   saveDiscoverArticleResolver,
 } from './discover_feeds'
 import { optInFeatureResolver } from './features'
+import { highlightsResolver } from './highlight'
+import {
+  hiddenHomeSectionResolver,
+  homeResolver,
+  refreshHomeResolver,
+} from './home'
 import { uploadImportFileResolver } from './importers/uploadImportFileResolver'
 import {
   addPopularReadResolver,
@@ -63,14 +70,12 @@ import {
   createHighlightResolver,
   createLabelResolver,
   createNewsletterEmailResolver,
-  // createReminderResolver,
   deleteAccountResolver,
   deleteFilterResolver,
   deleteHighlightResolver,
   deleteIntegrationResolver,
   deleteLabelResolver,
   deleteNewsletterEmailResolver,
-  // deleteReminderResolver,
   deleteRuleResolver,
   deleteWebhookResolver,
   deviceTokensResolver,
@@ -80,11 +85,7 @@ import {
   generateApiKeyResolver,
   getAllUsersResolver,
   getArticleResolver,
-  // getFollowersResolver,
-  // getFollowingResolver,
   getMeUserResolver,
-  // getSharedArticleResolver,
-  // getUserFeedArticlesResolver,
   getUserPersonalizationResolver,
   getUserResolver,
   googleLoginResolver,
@@ -104,7 +105,6 @@ import {
   newsletterEmailsResolver,
   recommendHighlightsResolver,
   recommendResolver,
-  // reminderResolver,
   reportItemResolver,
   revokeApiKeyResolver,
   rulesResolver,
@@ -119,14 +119,11 @@ import {
   setBookmarkArticleResolver,
   setDeviceTokenResolver,
   setFavoriteArticleResolver,
-  // setFollowResolver,
   setIntegrationResolver,
   setLabelsForHighlightResolver,
   setLabelsResolver,
   setLinkArchivedResolver,
   setRuleResolver,
-  // setShareArticleResolver,
-  // setShareHighlightResolver,
   setUserPersonalizationResolver,
   setWebhookResolver,
   subscribeResolver,
@@ -137,10 +134,7 @@ import {
   updateHighlightResolver,
   updateLabelResolver,
   updateNewsletterEmailResolver,
-  // updateLinkShareInfoResolver,
   updatePageResolver,
-  // updateReminderResolver,
-  // updateSharedCommentResolver,
   updatesSinceResolver,
   updateSubscriptionResolver,
   updateUserProfileResolver,
@@ -150,8 +144,13 @@ import {
   webhookResolver,
   webhooksResolver,
 } from './index'
-import { markEmailAsItemResolver, recentEmailsResolver } from './recent_emails'
+import {
+  markEmailAsItemResolver,
+  recentEmailsResolver,
+  replyToEmailResolver,
+} from './recent_emails'
 import { recentSearchesResolver } from './recent_searches'
+import { subscriptionResolver } from './subscriptions'
 import { WithDataSourcesContext } from './types'
 import { updateEmailResolver } from './user'
 
@@ -173,7 +172,7 @@ const resultResolveTypeResolver = (
 
 const readingProgressHandlers = {
   async readingProgressPercent(
-    article: { id: string; readingProgressPercent?: number },
+    article: LibraryItem,
     _: unknown,
     ctx: WithDataSourcesContext
   ) {
@@ -185,15 +184,15 @@ const readingProgressHandlers = {
         )
       if (readingProgress) {
         return Math.max(
-          article.readingProgressPercent ?? 0,
+          article.readingProgressBottomPercent ?? 0,
           readingProgress.readingProgressPercent
         )
       }
     }
-    return article.readingProgressPercent
+    return article.readingProgressBottomPercent
   },
   async readingProgressAnchorIndex(
-    article: { id: string; readingProgressAnchorIndex?: number },
+    article: LibraryItem,
     _: unknown,
     ctx: WithDataSourcesContext
   ) {
@@ -205,15 +204,15 @@ const readingProgressHandlers = {
         )
       if (readingProgress && readingProgress.readingProgressAnchorIndex) {
         return Math.max(
-          article.readingProgressAnchorIndex ?? 0,
+          article.readingProgressHighestReadAnchor ?? 0,
           readingProgress.readingProgressAnchorIndex
         )
       }
     }
-    return article.readingProgressAnchorIndex
+    return article.readingProgressHighestReadAnchor
   },
   async readingProgressTopPercent(
-    article: { id: string; readingProgressTopPercent?: number },
+    article: LibraryItem,
     _: unknown,
     ctx: WithDataSourcesContext
   ) {
@@ -246,30 +245,20 @@ export const functionResolvers = {
     updateUserProfile: updateUserProfileResolver,
     createArticle: createArticleResolver,
     createHighlight: createHighlightResolver,
-    // createReaction: createReactionResolver,
-    // deleteReaction: deleteReactionResolver,
     mergeHighlight: mergeHighlightResolver,
     updateHighlight: updateHighlightResolver,
     deleteHighlight: deleteHighlightResolver,
     uploadFileRequest: uploadFileRequestResolver,
-    // setShareArticle: setShareArticleResolver,
-    // updateSharedComment: updateSharedCommentResolver,
-    // setFollow: setFollowResolver,
     setBookmarkArticle: setBookmarkArticleResolver,
     setUserPersonalization: setUserPersonalizationResolver,
     createArticleSavingRequest: createArticleSavingRequestResolver,
-    // setShareHighlight: setShareHighlightResolver,
     reportItem: reportItemResolver,
-    // updateLinkShareInfo: updateLinkShareInfoResolver,
     setLinkArchived: setLinkArchivedResolver,
     createNewsletterEmail: createNewsletterEmailResolver,
     deleteNewsletterEmail: deleteNewsletterEmailResolver,
     saveUrl: saveUrlResolver,
     savePage: savePageResolver,
     saveFile: saveFileResolver,
-    // createReminder: createReminderResolver,
-    // updateReminder: updateReminderResolver,
-    // deleteReminder: deleteReminderResolver,
     setDeviceToken: setDeviceTokenResolver,
     createLabel: createLabelResolver,
     updateLabel: updateLabelResolver,
@@ -316,6 +305,8 @@ export const functionResolvers = {
     emptyTrash: emptyTrashResolver,
     fetchContent: fetchContentResolver,
     exportToIntegration: exportToIntegrationResolver,
+    replyToEmail: replyToEmailResolver,
+    refreshHome: refreshHomeResolver,
   },
   Query: {
     me: getMeUserResolver,
@@ -325,14 +316,9 @@ export const functionResolvers = {
     users: getAllUsersResolver,
     validateUsername: validateUsernameResolver,
     article: getArticleResolver,
-    // sharedArticle: getSharedArticleResolver,
-    // feedArticles: getUserFeedArticlesResolver,
-    // getFollowers: getFollowersResolver,
-    // getFollowing: getFollowingResolver,
     getUserPersonalization: getUserPersonalizationResolver,
     articleSavingRequest: articleSavingRequestResolver,
     newsletterEmails: newsletterEmailsResolver,
-    // reminder: reminderResolver,
     labels: labelsResolver,
     search: searchResolver,
     subscriptions: subscriptionsResolver,
@@ -352,13 +338,13 @@ export const functionResolvers = {
     feeds: feedsResolver,
     scanFeeds: scanFeedsResolver,
     integration: integrationResolver,
+    home: homeResolver,
+    subscription: subscriptionResolver,
+    hiddenHomeSection: hiddenHomeSectionResolver,
+    highlights: highlightsResolver,
   },
   User: {
-    async intercomHash(
-      user: User,
-      __: Record<string, unknown>,
-      ctx: WithDataSourcesContext
-    ) {
+    async intercomHash(user: User) {
       if (env.intercom.secretKey) {
         const userIdentifier = user.id.toString()
 
@@ -369,155 +355,188 @@ export const functionResolvers = {
       return undefined
     },
     async features(
-      user: User,
+      _: User,
       __: Record<string, unknown>,
       ctx: WithDataSourcesContext
     ) {
       if (!ctx.claims?.uid) {
         return undefined
       }
+
+      return []
+    },
+    async featureList(
+      _: User,
+      __: Record<string, unknown>,
+      ctx: WithDataSourcesContext
+    ) {
+      if (!ctx.claims?.uid) {
+        return undefined
+      }
+
       return findUserFeatures(ctx.claims.uid)
     },
+    picture: (user: UserEntity) => user.profile.pictureUrl,
+    // not implemented yet
+    friendsCount: () => 0,
+    followersCount: () => 0,
+    isFullUser: () => true,
+    viewerIsFollowing: () => false,
+    sharedArticles: () => [],
+    sharedArticlesCount: () => 0,
+    sharedHighlightsCount: () => 0,
+    sharedNotesCount: () => 0,
   },
   Article: {
-    async url(article: Article, _: unknown, ctx: WithDataSourcesContext) {
+    async url(article: LibraryItem, _: unknown, ctx: WithDataSourcesContext) {
       if (
-        (article.pageType == PageType.File ||
-          article.pageType == PageType.Book) &&
+        (article.itemType == PageType.File ||
+          article.itemType == PageType.Book) &&
         ctx.claims &&
         article.uploadFileId
       ) {
-        const upload = await findUploadFileById(article.uploadFileId)
+        const upload = await ctx.dataLoaders.uploadFiles.load(
+          article.uploadFileId
+        )
         if (!upload || !upload.fileName) {
           return undefined
         }
         const filePath = generateUploadFilePathName(upload.id, upload.fileName)
         return generateDownloadSignedUrl(filePath)
       }
-      return article.url
+      return article.originalUrl
     },
-    originalArticleUrl(article: { url: string }) {
-      return article.url
+    originalArticleUrl(article: LibraryItem) {
+      return article.originalUrl
     },
-    hasContent(article: {
-      content: string | null
-      originalHtml: string | null
-    }) {
-      return !!article.originalHtml && !!article.content
+    hasContent(article: LibraryItem) {
+      return !!article.originalContent && !!article.readableContent
     },
-    publishedAt(article: { publishedAt: Date }) {
-      return validatedDate(article.publishedAt)
+    publishedAt(article: LibraryItem) {
+      return validatedDate(article.publishedAt || undefined)
     },
-    image(article: { image?: string }): string | undefined {
-      return article.image && createImageProxyUrl(article.image, 320, 320)
+    image(article: LibraryItem): string | undefined {
+      if (article.thumbnail) {
+        return createImageProxyUrl(article.thumbnail, 320, 320)
+      }
+
+      return undefined
     },
-    wordsCount(article: { wordCount?: number; content?: string }) {
+    wordsCount(article: LibraryItem): number | undefined {
       if (article.wordCount) return article.wordCount
-      return article.content ? wordsCount(article.content) : undefined
+
+      return article.readableContent
+        ? wordsCount(article.readableContent)
+        : undefined
     },
     async labels(
-      article: { id: string; labels?: Label[] },
+      article: LibraryItem,
       _: unknown,
       ctx: WithDataSourcesContext
     ) {
       if (article.labels) return article.labels
 
-      return findLabelsByLibraryItemId(article.id, ctx.uid)
+      return ctx.dataLoaders.labels.load(article.id)
     },
+    async highlights(
+      article: LibraryItem,
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ) {
+      if (article.highlights) return article.highlights
+
+      return ctx.dataLoaders.highlights.load(article.id)
+    },
+    content: (item: LibraryItem) => item.readableContent,
+    hash: (item: LibraryItem) => item.textContentHash || '',
+    isArchived: (item: LibraryItem) => !!item.archivedAt,
+    uploadFileId: (item: LibraryItem) => item.uploadFile?.id,
+    pageType: (item: LibraryItem) => item.itemType,
     ...readingProgressHandlers,
   },
   Highlight: {
-    // async reactions(
-    //   highlight: { id: string; reactions?: Reaction[] },
-    //   _: unknown,
-    //   ctx: WithDataSourcesContext
-    // ) {
-    //   const { reactions, id } = highlight
-    //   if (reactions) return reactions
-
-    //   return await ctx.models.reaction.batchGetFromHighlight(id)
-    // },
+    reactions: () => [],
+    replies: () => [],
+    type: (highlight: Highlight) => highlight.highlightType,
+    async user(highlight: Highlight, __: unknown, ctx: WithDataSourcesContext) {
+      return ctx.dataLoaders.users.load(highlight.userId)
+    },
     createdByMe(
-      highlight: { user: { id: string } },
+      highlight: Highlight,
       __: unknown,
       ctx: WithDataSourcesContext
     ) {
-      return highlight.user.id === ctx.uid
+      return highlight.userId === ctx.uid
+    },
+    libraryItem(highlight: Highlight, _: unknown, ctx: WithDataSourcesContext) {
+      if (highlight.libraryItem) {
+        return highlight.libraryItem
+      }
+
+      return ctx.dataLoaders.libraryItems.load(highlight.libraryItemId)
+    },
+    labels: async (
+      highlight: Highlight,
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ) => {
+      return (
+        highlight.labels || ctx.dataLoaders.highlightLabels.load(highlight.id)
+      )
     },
   },
-  // Reaction: {
-  //   async user(
-  //     reaction: { userId: string },
-  //     __: unknown,
-  //     ctx: WithDataSourcesContext
-  //   ) {
-  //     return userDataToUser(await ctx.models.user.get(reaction.userId))
-  //   },
-  // },
   SearchItem: {
-    async url(item: SearchItem, _: unknown, ctx: WithDataSourcesContext) {
+    async url(item: LibraryItem, _: unknown, ctx: WithDataSourcesContext) {
       if (
-        (item.pageType == PageType.File || item.pageType == PageType.Book) &&
+        (item.itemType == PageType.File || item.itemType == PageType.Book) &&
         ctx.claims &&
         item.uploadFileId
       ) {
-        const upload = await findUploadFileById(item.uploadFileId)
+        const upload = await ctx.dataLoaders.uploadFiles.load(item.uploadFileId)
         if (!upload || !upload.fileName) {
           return undefined
         }
         const filePath = generateUploadFilePathName(upload.id, upload.fileName)
         return generateDownloadSignedUrl(filePath)
       }
-      return item.url
+      return item.originalUrl
     },
-    image(item: SearchItem) {
-      return item.image && createImageProxyUrl(item.image, 320, 320)
+    image(item: LibraryItem) {
+      return item.thumbnail && createImageProxyUrl(item.thumbnail, 320, 320)
     },
-    originalArticleUrl(item: { url: string }) {
-      return item.url
+    originalArticleUrl(item: LibraryItem) {
+      return item.originalUrl
     },
-    wordsCount(item: { wordCount?: number; content?: string }) {
+    wordsCount(item: LibraryItem) {
       if (item.wordCount) return item.wordCount
-      return item.content ? wordsCount(item.content) : undefined
+      return item.readableContent ? wordsCount(item.readableContent) : undefined
     },
-    siteIcon(item: { siteIcon?: string }) {
+    siteIcon(item: LibraryItem) {
       if (item.siteIcon && !isBase64Image(item.siteIcon)) {
         return createImageProxyUrl(item.siteIcon, 128, 128)
       }
 
       return item.siteIcon
     },
-    async labels(
-      item: { id: string; labels?: Label[] },
-      _: unknown,
-      ctx: WithDataSourcesContext
-    ) {
+    async labels(item: LibraryItem, _: unknown, ctx: WithDataSourcesContext) {
       if (item.labels) return item.labels
 
-      return findLabelsByLibraryItemId(item.id, ctx.uid)
+      return ctx.dataLoaders.labels.load(item.id)
     },
     async recommendations(
-      item: {
-        id: string
-        recommendations?: Recommendation[]
-        recommenderNames?: string[] | null
-      },
+      item: LibraryItem,
       _: unknown,
       ctx: WithDataSourcesContext
     ) {
       if (item.recommendations) return item.recommendations
 
-      if (item.recommenderNames && item.recommenderNames.length > 0) {
-        const recommendations = await findRecommendationsByLibraryItemId(
-          item.id,
-          ctx.uid
-        )
-        return recommendations.map(recommandationDataToRecommendation)
-      }
-
-      return []
+      return ctx.dataLoaders.recommendations.load(item.id)
     },
-    async aiSummary(item: SearchItem, _: unknown, ctx: WithDataSourcesContext) {
+    async aiSummary(
+      item: LibraryItem,
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ) {
       return (
         await getAISummary({
           userId: ctx.uid,
@@ -527,18 +546,51 @@ export const functionResolvers = {
       )?.summary
     },
     async highlights(
-      item: {
-        id: string
-        highlights?: Highlight[]
-      },
+      item: LibraryItem,
       _: unknown,
       ctx: WithDataSourcesContext
     ) {
       if (item.highlights) return item.highlights
 
-      const highlights = await findHighlightsByLibraryItemId(item.id, ctx.uid)
-      return highlights.map(highlightDataToHighlight)
+      return ctx.dataLoaders.highlights.load(item.id)
     },
+    async content(
+      item: PartialLibraryItem,
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ) {
+      // convert html to the requested format if requested
+      if (
+        item.format &&
+        item.format !== ArticleFormat.Html &&
+        item.readableContent
+      ) {
+        let highlights: Highlight[] = []
+        // load highlights if needed
+        if (
+          item.format === ArticleFormat.HighlightedMarkdown &&
+          item.highlightAnnotations?.length
+        ) {
+          highlights = await ctx.dataLoaders.highlights.load(item.id)
+        }
+
+        try {
+          ctx.log.info(`Converting content to: ${item.format}`)
+
+          // convert html to the requested format
+          const converter = contentConverter(item.format)
+          if (converter) {
+            return converter(item.readableContent, highlights)
+          }
+        } catch (error) {
+          ctx.log.error('Error converting content', error)
+        }
+      }
+
+      return item.readableContent
+    },
+    isArchived: (item: LibraryItem) => !!item.archivedAt,
+    pageType: (item: LibraryItem) => item.itemType,
     ...readingProgressHandlers,
   },
   Subscription: {
@@ -570,37 +622,191 @@ export const functionResolvers = {
       return newsletterEmail.folder || EXISTING_NEWSLETTER_FOLDER
     },
   },
+  HomeSection: {
+    title: (section: { title?: string; layout: string }) => {
+      if (section.title) return section.title
+
+      switch (section.layout) {
+        case 'just_added':
+          return 'Just Added'
+        case 'top_picks':
+          return 'Top Picks'
+        case 'quick_links':
+          return 'Quick Links'
+        case 'hidden':
+          return 'Hidden Gems'
+        default:
+          return ''
+      }
+    },
+    async items(
+      section: {
+        items: Array<{
+          id: string
+          type: 'library_item' | 'public_item'
+          score: number
+        }>
+      },
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ) {
+      const items = section.items
+
+      const libraryItemIds = items
+        .filter((item) => item.type === 'library_item')
+        .map((item) => item.id)
+      const libraryItems = (
+        await ctx.dataLoaders.libraryItems.loadMany(libraryItemIds)
+      ).filter((libraryItem) => !isError(libraryItem)) as Array<LibraryItem>
+
+      const publicItemIds = section.items
+        .filter((item) => item.type === 'public_item')
+        .map((item) => item.id)
+      const publicItems = (
+        await ctx.dataLoaders.publicItems.loadMany(publicItemIds)
+      ).filter((publicItem) => !isError(publicItem)) as Array<PublicItem>
+
+      return items
+        .map((item) => {
+          const libraryItem = libraryItems.find(
+            (libraryItem) => item.id === libraryItem.id
+          )
+          if (libraryItem) {
+            return {
+              id: libraryItem.id,
+              title: libraryItem.title,
+              author: libraryItem.author,
+              thumbnail: libraryItem.thumbnail,
+              wordCount: libraryItem.wordCount,
+              date: libraryItem.savedAt,
+              url: libraryItem.originalUrl,
+              canArchive: !libraryItem.archivedAt,
+              canDelete: !libraryItem.deletedAt,
+              canSave: false,
+              canComment: false,
+              canShare: true,
+              dir: libraryItem.directionality,
+              previewContent:
+                libraryItem.previewContent || libraryItem.description,
+              subscription: libraryItem.subscription,
+              siteName: libraryItem.siteName,
+              siteIcon: libraryItem.siteIcon,
+              slug: libraryItem.slug,
+              score: item.score,
+            }
+          }
+
+          const publicItem = publicItems.find(
+            (publicItem) => item.id === publicItem.id
+          )
+          if (publicItem) {
+            return {
+              id: publicItem.id,
+              title: publicItem.title,
+              author: publicItem.author,
+              dir: publicItem.dir,
+              previewContent: publicItem.previewContent,
+              thumbnail: publicItem.thumbnail,
+              wordCount: publicItem.wordCount,
+              date: publicItem.createdAt,
+              url: publicItem.url,
+              canArchive: false,
+              canDelete: false,
+              canSave: true,
+              canComment: true,
+              canShare: true,
+              broadcastCount: publicItem.stats.broadcastCount,
+              likeCount: publicItem.stats.likeCount,
+              saveCount: publicItem.stats.saveCount,
+              source: publicItem.source,
+              score: item.score,
+            }
+          }
+        })
+        .filter((item) => !!item)
+    },
+  },
+  HomeItem: {
+    async source(
+      item: Merge<
+        HomeItem,
+        { subscription?: string; siteName: string; siteIcon?: string }
+      >,
+      _: unknown,
+      ctx: WithDataSourcesContext
+    ): Promise<HomeItemSource> {
+      if (item.source) {
+        return item.source
+      }
+
+      if (!item.subscription) {
+        return {
+          name: item.siteName,
+          icon: item.siteIcon,
+          type: HomeItemSourceType.Library,
+        }
+      }
+
+      const subscription = await ctx.dataLoaders.subscriptions.load(
+        item.subscription
+      )
+      if (!subscription) {
+        return {
+          name: item.siteName,
+          icon: item.siteIcon,
+          type: HomeItemSourceType.Library,
+        }
+      }
+
+      return {
+        id: subscription.id,
+        url: subscription.url,
+        name: subscription.name,
+        icon: subscription.icon,
+        type: subscription.type as unknown as HomeItemSourceType,
+      }
+    },
+    thumbnail(item: HomeItem) {
+      return item.thumbnail && createImageProxyUrl(item.thumbnail, 320, 320)
+    },
+  },
+  ArticleSavingRequest: {
+    status: (item: LibraryItem) => item.state,
+    url: (item: LibraryItem) => item.originalUrl,
+  },
+  Recommendation: {
+    user: (recommendation: Recommendation) => {
+      return {
+        userId: recommendation.recommender.id,
+        username: recommendation.recommender.profile.username,
+        profileImageURL: recommendation.recommender.profile.pictureUrl,
+        name: recommendation.recommender.name,
+      }
+    },
+    name: (recommendation: Recommendation) => recommendation.group.name,
+    recommendedAt: (recommendation: Recommendation) => recommendation.createdAt,
+  },
   ...resultResolveTypeResolver('Login'),
   ...resultResolveTypeResolver('LogOut'),
   ...resultResolveTypeResolver('GoogleSignup'),
   ...resultResolveTypeResolver('UpdateUser'),
   ...resultResolveTypeResolver('UpdateUserProfile'),
   ...resultResolveTypeResolver('Article'),
-  // ...resultResolveTypeResolver('SharedArticle'),
   ...resultResolveTypeResolver('Articles'),
   ...resultResolveTypeResolver('User'),
   ...resultResolveTypeResolver('Users'),
   ...resultResolveTypeResolver('SaveArticleReadingProgress'),
-  // ...resultResolveTypeResolver('FeedArticles'),
   ...resultResolveTypeResolver('CreateArticle'),
   ...resultResolveTypeResolver('CreateHighlight'),
-  // ...resultResolveTypeResolver('CreateReaction'),
-  // ...resultResolveTypeResolver('DeleteReaction'),
   ...resultResolveTypeResolver('MergeHighlight'),
   ...resultResolveTypeResolver('UpdateHighlight'),
   ...resultResolveTypeResolver('DeleteHighlight'),
   ...resultResolveTypeResolver('UploadFileRequest'),
-  // ...resultResolveTypeResolver('SetShareArticle'),
-  // ...resultResolveTypeResolver('UpdateSharedComment'),
   ...resultResolveTypeResolver('SetBookmarkArticle'),
-  // ...resultResolveTypeResolver('SetFollow'),
-  // ...resultResolveTypeResolver('GetFollowers'),
-  // ...resultResolveTypeResolver('GetFollowing'),
   ...resultResolveTypeResolver('GetUserPersonalization'),
   ...resultResolveTypeResolver('SetUserPersonalization'),
   ...resultResolveTypeResolver('ArticleSavingRequest'),
   ...resultResolveTypeResolver('CreateArticleSavingRequest'),
-  // ...resultResolveTypeResolver('SetShareHighlight'),
   ...resultResolveTypeResolver('ArchiveLink'),
   ...resultResolveTypeResolver('CreateNewsletterEmail'),
   ...resultResolveTypeResolver('NewsletterEmails'),
@@ -668,4 +874,10 @@ export const functionResolvers = {
   ...resultResolveTypeResolver('FetchContent'),
   ...resultResolveTypeResolver('Integration'),
   ...resultResolveTypeResolver('ExportToIntegration'),
+  ...resultResolveTypeResolver('ReplyToEmail'),
+  ...resultResolveTypeResolver('Home'),
+  ...resultResolveTypeResolver('Subscription'),
+  ...resultResolveTypeResolver('RefreshHome'),
+  ...resultResolveTypeResolver('HiddenHomeSection'),
+  ...resultResolveTypeResolver('Highlights'),
 }

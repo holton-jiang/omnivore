@@ -1,12 +1,16 @@
 import { ConnectionOptions, Job, QueueEvents, Worker } from 'bullmq'
+import { createServer } from 'http'
 import { nanoid } from 'nanoid'
 import supertest from 'supertest'
 import { v4 } from 'uuid'
+import { makeApolloServer } from '../src/apollo'
 import { createWorker, QUEUE_NAME } from '../src/queue-processor'
 import { createApp } from '../src/server'
 import { corsConfig } from '../src/utils/corsConfig'
 
-const { app, apollo } = createApp()
+const app = createApp()
+const httpServer = createServer(app)
+const apollo = makeApolloServer(app, httpServer)
 export const request = supertest(app)
 let worker: Worker
 let queueEvents: QueueEvents

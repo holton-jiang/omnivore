@@ -27,6 +27,7 @@ import com.pspdfkit.annotations.HighlightAnnotation
 import com.pspdfkit.document.download.DownloadJob
 import com.pspdfkit.document.download.DownloadRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,7 +47,8 @@ data class PDFReaderParams(
 @HiltViewModel
 class PDFReaderViewModel @Inject constructor(
   private val dataService: DataService,
-  private val networker: Networker
+  private val networker: Networker,
+  @ApplicationContext private val applicationContext: Context
 ): ViewModel() {
   var annotationUnderNoteEdit: Annotation? = null
   val pdfReaderParamsLiveData = MutableLiveData<PDFReaderParams?>(null)
@@ -73,7 +75,6 @@ class PDFReaderViewModel @Inject constructor(
               htmlContent = "",
               highlights = item.highlights,
               contentStatus = "SUCCEEDED",
-              objectID = "",
               labelsJSONString = Gson().toJson(item.labels)
             )
 
@@ -92,7 +93,7 @@ class PDFReaderViewModel @Inject constructor(
 
   private suspend fun loadItemFromNetwork(slug: String, context: Context) {
     withContext(Dispatchers.IO) {
-      val articleQueryResult = networker.savedItem(slug)
+      val articleQueryResult = networker.savedItem(context = applicationContext, slug)
       val article = articleQueryResult.item ?: return@withContext
       val request = DownloadRequest.Builder(context)
         .uri(article.pageURLString)
@@ -103,10 +104,9 @@ class PDFReaderViewModel @Inject constructor(
         override fun onComplete(output: File) {
           val articleContent = ArticleContent(
             title = article.title,
-            htmlContent = article.content ?: "",
+            htmlContent = "",
             highlights = articleQueryResult.highlights,
             contentStatus = "SUCCEEDED",
-            objectID = "",
             labelsJSONString = Gson().toJson(articleQueryResult.labels)
           )
 

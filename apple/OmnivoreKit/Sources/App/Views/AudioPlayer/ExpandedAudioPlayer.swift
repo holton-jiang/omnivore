@@ -12,7 +12,6 @@
     @EnvironmentObject var dataService: DataService
     @EnvironmentObject var audioController: AudioController
 
-    @Environment(\.colorScheme) private var colorScheme: ColorScheme
     @Environment(\.dismiss) private var dismiss
 
     let delete: (_: NSManagedObjectID) -> Void
@@ -45,7 +44,7 @@
       if audioController.playbackError {
         return AnyView(Color.clear)
       }
-      if let itemID = audioController.itemAudioProperties?.itemID, audioController.isLoadingItem(itemID: itemID) {
+      if audioController.isLoadingItem(audioController.itemAudioProperties) {
         return AnyView(ProgressView())
       } else {
         return AnyView(Button(
@@ -98,11 +97,11 @@
           }
         ).padding(.trailing, 5)
 
-        if !(audioController.itemAudioProperties?.isArchived ?? false) {
+        if !((audioController.itemAudioProperties as? LinkedItemAudioProperties)?.isArchived ?? false) {
           Button(
             action: { performArchive() },
             label: {
-              if audioController.itemAudioProperties?.isArchived ?? false {
+              if (audioController.itemAudioProperties as? LinkedItemAudioProperties)?.isArchived ?? false {
                 Image
                   .toolbarUnarchive
                   .foregroundColor(Color.toolbarItemForeground)
@@ -130,20 +129,20 @@
       }
     }
 
-    func performViewArticle() {
-      if let objectID = audioController.itemAudioProperties?.objectID {
-        viewArticle(objectID)
-      }
-    }
+//    func performViewArticle() {
+//      if let objectID = audioController.itemAudioProperties?.objectID {
+//        viewArticle(objectID)
+//      }
+//    }
 
     func performDelete() {
-      if let objectID = audioController.itemAudioProperties?.objectID {
+      if let objectID = (audioController.itemAudioProperties as? LinkedItemAudioProperties)?.objectID {
         delete(objectID)
       }
     }
 
     func performArchive() {
-      if let objectID = audioController.itemAudioProperties?.objectID {
+      if let objectID = (audioController.itemAudioProperties as? LinkedItemAudioProperties)?.objectID {
         archive(objectID)
       }
     }
@@ -364,6 +363,8 @@
           playbackRateButton(rate: 1.0, title: "1.0×", selected: audioController.playbackRate == 1.0)
           playbackRateButton(rate: 1.1, title: "1.1×", selected: audioController.playbackRate == 1.1)
           playbackRateButton(rate: 1.2, title: "1.2×", selected: audioController.playbackRate == 1.2)
+          playbackRateButton(rate: 1.2, title: "1.2×", selected: audioController.playbackRate == 1.3)
+          playbackRateButton(rate: 1.2, title: "1.2×", selected: audioController.playbackRate == 1.4)
           playbackRateButton(rate: 1.5, title: "1.5×", selected: audioController.playbackRate == 1.5)
           playbackRateButton(rate: 1.7, title: "1.7×", selected: audioController.playbackRate == 1.7)
           playbackRateButton(rate: 2.0, title: "2.0×", selected: audioController.playbackRate == 2.0)
@@ -467,7 +468,7 @@
     }
 
     public var innerBody: some View {
-      if let itemAudioProperties = self.audioController.itemAudioProperties {
+      if let itemAudioProperties = self.audioController.itemAudioProperties as? LinkedItemAudioProperties {
         return AnyView(
           playerContent(itemAudioProperties)
             .tint(.appGrayTextContrast)

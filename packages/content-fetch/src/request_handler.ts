@@ -1,10 +1,13 @@
+import { Storage } from '@google-cloud/storage'
 import { fetchContent } from '@omnivore/puppeteer-parse'
 import { RequestHandler } from 'express'
+import { analytics } from './analytics'
 import { queueSavePageJob } from './job'
 import { redisDataSource } from './redis_data_source'
 
-interface User {
+interface UserConfig {
   id: string
+  libraryItemId: string
   folder?: string
 }
 
@@ -22,7 +25,7 @@ interface RequestBody {
   savedAt?: string
   publishedAt?: string
   folder?: string
-  users?: User[]
+  users?: UserConfig[]
   priority: 'high' | 'low'
 }
 
@@ -41,7 +44,7 @@ interface LogRecord {
   savedAt?: string
   publishedAt?: string
   folder?: string
-  users?: User[]
+  users?: UserConfig[]
   error?: string
   totalTime?: number
 }
@@ -53,12 +56,69 @@ interface FetchResult {
   contentType?: string
 }
 
-export const cacheFetchResult = async (fetchResult: FetchResult) => {
+const storage = process.env.GCS_UPLOAD_SA_KEY_FILE_PATH
+  ? new Storage({ keyFilename: process.env.GCS_UPLOAD_SA_KEY_FILE_PATH })
+  : new Storage()
+const bucketName = process.env.GCS_UPLOAD_BUCKET || 'omnivore-files'
+
+const uploadToBucket = async (filePath: string, data: string) => {
+  await storage
+    .bucket(bucketName)
+    .file(filePath)
+    .save(data, { public: false, timeout: 30000 })
+}
+
+const uploadOriginalContent = async (
+  users: UserConfig[],
+  content: string,
+  savedTimestamp: number
+) => {
+  await Promise.all(
+    users.map(async (user) => {
+      const filePath = `content/${user.id}/${user.libraryItemId}.${savedTimestamp}.original`
+
+      await uploadToBucket(filePath, content)
+
+      console.log(`Original content uploaded to ${filePath}`)
+    })
+  )
+}
+
+const cacheKey = (url: string, locale = '', timezone = '') =>
+  `fetch-result:${url}:${locale}:${timezone}`
+
+const isFetchResult = (obj: unknown): obj is FetchResult => {
+  return typeof obj === 'object' && obj !== null && 'finalUrl' in obj
+}
+
+export const cacheFetchResult = async (
+  key: string,
+  fetchResult: FetchResult
+) => {
   // cache the fetch result for 24 hours
   const ttl = 24 * 60 * 60
-  const key = `fetch-result:${fetchResult.finalUrl}`
   const value = JSON.stringify(fetchResult)
   return redisDataSource.cacheClient.set(key, value, 'EX', ttl, 'NX')
+}
+
+const getCachedFetchResult = async (
+  key: string
+): Promise<FetchResult | undefined> => {
+  const result = await redisDataSource.cacheClient.get(key)
+  if (!result) {
+    console.info('fetch result is not cached', key)
+    return undefined
+  }
+
+  const fetchResult = JSON.parse(result) as unknown
+  if (!isFetchResult(fetchResult)) {
+    console.error('invalid fetch result in cache', key)
+    return undefined
+  }
+
+  console.info('fetch result is cached', key)
+
+  return fetchResult
 }
 
 export const contentFetchRequestHandler: RequestHandler = async (req, res) => {
@@ -75,6 +135,7 @@ export const contentFetchRequestHandler: RequestHandler = async (req, res) => {
       {
         id: userId,
         folder: body.folder,
+        libraryItemId: body.saveRequestId,
       },
     ]
   }
@@ -111,8 +172,28 @@ export const contentFetchRequestHandler: RequestHandler = async (req, res) => {
   console.log(`Article parsing request`, logRecord)
 
   try {
-    const fetchResult = await fetchContent(url, locale, timezone)
-    const finalUrl = fetchResult.finalUrl
+    const key = cacheKey(url, locale, timezone)
+    let fetchResult = await getCachedFetchResult(key)
+    if (!fetchResult) {
+      console.log(
+        'fetch result not found in cache, fetching content now...',
+        url
+      )
+
+      fetchResult = await fetchContent(url, locale, timezone)
+      console.log('content has been fetched')
+
+      if (fetchResult.content) {
+        const cacheResult = await cacheFetchResult(key, fetchResult)
+        console.log('cache result', cacheResult)
+      }
+    }
+
+    const savedDate = savedAt ? new Date(savedAt) : new Date()
+    const { finalUrl, title, content, contentType } = fetchResult
+    if (content) {
+      await uploadOriginalContent(users, content, savedDate.getTime())
+    }
 
     const savePageJobs = users.map((user) => ({
       userId: user.id,
@@ -120,23 +201,23 @@ export const contentFetchRequestHandler: RequestHandler = async (req, res) => {
         userId: user.id,
         url,
         finalUrl,
-        articleSavingRequestId,
+        articleSavingRequestId: user.libraryItemId,
         state,
         labels,
         source,
         folder: user.folder,
         rssFeedUrl,
-        savedAt,
+        savedAt: savedDate.toISOString(),
         publishedAt,
         taskId,
+        title,
+        contentType,
+        cacheKey: key,
       },
       isRss: !!rssFeedUrl,
       isImport: !!taskId,
       priority,
     }))
-
-    const cacheResult = await cacheFetchResult(fetchResult)
-    console.log('cacheFetchResult result', cacheResult)
 
     const jobs = await queueSavePageJob(savePageJobs)
     console.log('save-page jobs queued', jobs.length)
@@ -151,6 +232,20 @@ export const contentFetchRequestHandler: RequestHandler = async (req, res) => {
   } finally {
     logRecord.totalTime = Date.now() - functionStartTime
     console.log(`parse-page result`, logRecord)
+
+    // capture events
+    analytics.capture(
+      users.map((user) => user.id),
+      {
+        result: logRecord.error ? 'failure' : 'success',
+        properties: {
+          url,
+          source,
+          totalTime: logRecord.totalTime,
+          errorMessage: logRecord.error,
+        },
+      }
+    )
   }
 
   res.sendStatus(200)

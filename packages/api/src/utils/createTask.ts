@@ -14,11 +14,22 @@ import { env } from '../env'
 import {
   ArticleSavingRequestStatus,
   CreateLabelInput,
+  TaskState,
 } from '../generated/graphql'
 import { AISummarizeJobData, AI_SUMMARIZE_JOB_NAME } from '../jobs/ai-summarize'
+import {
+  CreateDigestData,
+  CreateDigestJobResponse,
+  CreateDigestJobSchedule,
+  CREATE_DIGEST_JOB,
+  CRON_PATTERNS,
+  getCronPattern,
+} from '../jobs/ai/create_digest'
 import { BulkActionData, BULK_ACTION_JOB_NAME } from '../jobs/bulk_action'
 import { CallWebhookJobData, CALL_WEBHOOK_JOB_NAME } from '../jobs/call_webhook'
+import { SendEmailJobData, SEND_EMAIL_JOB } from '../jobs/email/send_email'
 import { THUMBNAIL_JOB } from '../jobs/find_thumbnail'
+import { GENERATE_PREVIEW_CONTENT_JOB } from '../jobs/generate_preview_content'
 import { EXPORT_ALL_ITEMS_JOB_NAME } from '../jobs/integration/export_all_items'
 import {
   ExportItemJobData,
@@ -35,6 +46,10 @@ import {
   REFRESH_ALL_FEEDS_JOB_NAME,
   REFRESH_FEED_JOB_NAME,
 } from '../jobs/rss/refreshAllFeeds'
+import {
+  ScoreLibraryItemJobData,
+  SCORE_LIBRARY_ITEM_JOB,
+} from '../jobs/score_library_item'
 import { SYNC_READ_POSITIONS_JOB_NAME } from '../jobs/sync_read_positions'
 import { TriggerRuleJobData, TRIGGER_RULE_JOB_NAME } from '../jobs/trigger_rule'
 import {
@@ -43,13 +58,19 @@ import {
   UPDATE_HIGHLIGHT_JOB,
   UPDATE_LABELS_JOB,
 } from '../jobs/update_db'
+import { UpdateHomeJobData, UPDATE_HOME_JOB } from '../jobs/update_home'
+import {
+  UploadContentJobData,
+  UPLOAD_CONTENT_JOB,
+} from '../jobs/upload_content'
 import { getBackendQueue, JOB_VERSION } from '../queue-processor'
 import { redisDataSource } from '../redis_data_source'
+import { writeDigest } from '../services/digest'
 import { signFeatureToken } from '../services/features'
 import { OmnivoreAuthorizationHeader } from './auth'
 import { CreateTaskError } from './errors'
 import { stringToHash } from './helpers'
-import { logger } from './logger'
+import { logError, logger } from './logger'
 import View = google.cloud.tasks.v2.Task.View
 
 // Instantiates a client.
@@ -69,6 +90,8 @@ export const getJobPriority = (jobName: string): number => {
     case UPDATE_LABELS_JOB:
     case UPDATE_HIGHLIGHT_JOB:
     case SYNC_READ_POSITIONS_JOB_NAME:
+    case SEND_EMAIL_JOB:
+    case UPDATE_HOME_JOB:
       return 1
     case TRIGGER_RULE_JOB_NAME:
     case CALL_WEBHOOK_JOB_NAME:
@@ -77,28 +100,23 @@ export const getJobPriority = (jobName: string): number => {
       return 5
     case BULK_ACTION_JOB_NAME:
     case `${REFRESH_FEED_JOB_NAME}_high`:
-      return 10
     case PROCESS_YOUTUBE_TRANSCRIPT_JOB_NAME:
-      return 20
+    case UPLOAD_CONTENT_JOB:
+    case SCORE_LIBRARY_ITEM_JOB:
+      return 10
     case `${REFRESH_FEED_JOB_NAME}_low`:
     case EXPORT_ITEM_JOB_NAME:
+    case CREATE_DIGEST_JOB:
       return 50
     case EXPORT_ALL_ITEMS_JOB_NAME:
     case REFRESH_ALL_FEEDS_JOB_NAME:
     case THUMBNAIL_JOB:
+    case GENERATE_PREVIEW_CONTENT_JOB:
       return 100
 
     default:
       logger.error(`unknown job name: ${jobName}`)
       return 1
-  }
-}
-
-const logError = (error: any): void => {
-  if (axios.isAxiosError(error)) {
-    logger.error(error.response)
-  } else {
-    logger.error(error)
   }
 }
 
@@ -837,6 +855,200 @@ export const enqueueExportItem = async (jobData: ExportItemJobData) => {
       delay: 10000, // 10 seconds
     },
   })
+}
+
+export const enqueueSendEmail = async (jobData: SendEmailJobData) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    return undefined
+  }
+
+  return queue.add(SEND_EMAIL_JOB, jobData, {
+    attempts: 1, // only try once
+    priority: getJobPriority(SEND_EMAIL_JOB),
+  })
+}
+
+export const scheduledDigestJobOptions = (
+  schedule: CreateDigestJobSchedule
+) => ({
+  pattern: getCronPattern(schedule),
+  tz: 'UTC',
+})
+
+export const removeDigestJobs = async (userId: string) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    throw new Error('No queue found')
+  }
+
+  const jobId = `${CREATE_DIGEST_JOB}_${userId}`
+
+  // remove existing one-time job if any
+  const job = await queue.getJob(jobId)
+  if (job) {
+    await job.remove()
+    logger.info('existing job removed', { jobId })
+  }
+
+  // remove existing repeated job if any
+  await Promise.all(
+    Object.keys(CRON_PATTERNS).map((key) =>
+      queue.removeRepeatable(
+        CREATE_DIGEST_JOB,
+        scheduledDigestJobOptions(key as CreateDigestJobSchedule),
+        jobId
+      )
+    )
+  )
+}
+
+export const enqueueCreateDigest = async (
+  data: CreateDigestData,
+  schedule?: CreateDigestJobSchedule
+): Promise<CreateDigestJobResponse> => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    throw new Error('No queue found')
+  }
+
+  // generate unique id for the digest
+  data.id = uuid()
+  // enqueue create digest job immediately
+  const jobId = `${CREATE_DIGEST_JOB}_${data.userId}`
+  const job = await queue.add(CREATE_DIGEST_JOB, data, {
+    jobId, // dedupe by job id
+    removeOnComplete: true,
+    removeOnFail: true,
+    attempts: 1,
+    priority: getJobPriority(CREATE_DIGEST_JOB),
+  })
+
+  if (!job || !job.id) {
+    logger.error('Error while enqueuing create digest job', data)
+    throw new Error('Error while enqueuing create digest job')
+  }
+
+  logger.info('create digest job enqueued', { jobId })
+
+  const digest = {
+    id: data.id,
+    jobState: TaskState.Running,
+  }
+
+  // update digest job state in redis
+  await writeDigest(data.userId, digest)
+
+  if (schedule) {
+    // schedule repeated job
+    // delete the digest id to avoid duplication
+    delete data.id
+
+    const job = await queue.add(CREATE_DIGEST_JOB, data, {
+      attempts: 1,
+      priority: getJobPriority(CREATE_DIGEST_JOB),
+      repeat: {
+        ...scheduledDigestJobOptions(schedule), // cron parser options (tz, etc.)
+        jobId,
+      },
+    })
+
+    if (!job || !job.id) {
+      logger.error('Error while scheduling create digest job', data)
+      throw new Error('Error while scheduling create digest job')
+    }
+
+    logger.info('create digest job scheduled', { jobId, schedule })
+  }
+
+  return {
+    jobId: digest.id,
+    jobState: digest.jobState,
+  }
+}
+
+export const enqueueBulkUploadContentJob = async (
+  data: UploadContentJobData[]
+) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    return ''
+  }
+
+  const jobs = data.map((d) => ({
+    name: UPLOAD_CONTENT_JOB,
+    data: d,
+    opts: {
+      jobId: `${UPLOAD_CONTENT_JOB}_${d.filePath}_${JOB_VERSION}`, // dedupe by job id
+      removeOnComplete: true,
+      removeOnFail: true,
+      attempts: 3,
+      priority: getJobPriority(UPLOAD_CONTENT_JOB),
+    },
+  }))
+
+  return queue.addBulk(jobs)
+}
+
+export const updateHomeJobId = (userId: string) =>
+  `${UPDATE_HOME_JOB}_${userId}_${JOB_VERSION}`
+
+export const enqueueUpdateHomeJob = async (data: UpdateHomeJobData) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    return undefined
+  }
+
+  return queue.add(UPDATE_HOME_JOB, data, {
+    jobId: updateHomeJobId(data.userId),
+    removeOnComplete: true,
+    removeOnFail: true,
+    priority: getJobPriority(UPDATE_HOME_JOB),
+    attempts: 3,
+  })
+}
+
+export const updateScoreJobId = (userId: string) =>
+  `${SCORE_LIBRARY_ITEM_JOB}_${userId}_${JOB_VERSION}`
+
+export const enqueueScoreJob = async (data: ScoreLibraryItemJobData) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    return undefined
+  }
+
+  return queue.add(SCORE_LIBRARY_ITEM_JOB, data, {
+    jobId: updateScoreJobId(data.userId),
+    removeOnComplete: true,
+    removeOnFail: true,
+    priority: getJobPriority(SCORE_LIBRARY_ITEM_JOB),
+    attempts: 3,
+  })
+}
+
+export const enqueueGeneratePreviewContentJob = async (
+  libraryItemId: string,
+  userId: string
+) => {
+  const queue = await getBackendQueue()
+  if (!queue) {
+    return undefined
+  }
+
+  return queue.add(
+    GENERATE_PREVIEW_CONTENT_JOB,
+    {
+      libraryItemId,
+      userId,
+    },
+    {
+      jobId: `${GENERATE_PREVIEW_CONTENT_JOB}_${libraryItemId}_${JOB_VERSION}`,
+      removeOnComplete: true,
+      removeOnFail: true,
+      priority: getJobPriority(GENERATE_PREVIEW_CONTENT_JOB),
+      attempts: 3,
+    }
+  )
 }
 
 export default createHttpTaskWithToken

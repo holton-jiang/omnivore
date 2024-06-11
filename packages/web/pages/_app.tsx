@@ -4,7 +4,7 @@ import '../styles/articleInnerStyling.css'
 import type { AppProps } from 'next/app'
 import { IdProvider } from '@radix-ui/react-id'
 import { NextRouter, useRouter } from 'next/router'
-import { useEffect, useState } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import TopBarProgress from 'react-topbar-progress-indicator'
 import {
   KBarProvider,
@@ -22,6 +22,7 @@ import {
 import { updateTheme } from '../lib/themeUpdater'
 import { ThemeId } from '../components/tokens/stitches.config'
 import { posthog } from 'posthog-js'
+import { GoogleReCaptchaProvider } from '@google-recaptcha/react'
 
 TopBarProgress.config({
   barColors: {
@@ -65,6 +66,24 @@ const generateActions = (router: NextRouter) => {
   return defaultActions
 }
 
+const ConditionalCaptchaProvider = (props: {
+  children: ReactNode
+}): JSX.Element => {
+  if (process.env.NEXT_PUBLIC_RECAPTCHA_CHALLENGE_SITE_KEY) {
+    return (
+      <GoogleReCaptchaProvider
+        type="v2-checkbox"
+        isEnterprise={true}
+        host="recaptcha.net"
+        siteKey={process.env.NEXT_PUBLIC_RECAPTCHA_CHALLENGE_SITE_KEY ?? ''}
+      >
+        {props.children}
+      </GoogleReCaptchaProvider>
+    )
+  }
+  return <>{props.children}</>
+}
+
 export function OmnivoreApp({ Component, pageProps }: AppProps): JSX.Element {
   const router = useRouter()
 
@@ -79,19 +98,21 @@ export function OmnivoreApp({ Component, pageProps }: AppProps): JSX.Element {
   }, [router.events])
 
   return (
-    <KBarProvider actions={generateActions(router)}>
-      <KBarPortal>
-        <KBarPositioner style={{ zIndex: 100 }}>
-          <KBarAnimator style={animatorStyle}>
-            <KBarSearch style={searchStyle} />
-            <KBarResultsComponents />
-          </KBarAnimator>
-        </KBarPositioner>
-      </KBarPortal>
-      <IdProvider>
-        <Component {...pageProps} />
-      </IdProvider>
-    </KBarProvider>
+    <ConditionalCaptchaProvider>
+      <KBarProvider actions={generateActions(router)}>
+        <KBarPortal>
+          <KBarPositioner style={{ zIndex: 100 }}>
+            <KBarAnimator style={animatorStyle}>
+              <KBarSearch style={searchStyle} />
+              <KBarResultsComponents />
+            </KBarAnimator>
+          </KBarPositioner>
+        </KBarPortal>
+        <IdProvider>
+          <Component {...pageProps} />
+        </IdProvider>
+      </KBarProvider>
+    </ConditionalCaptchaProvider>
   )
 }
 

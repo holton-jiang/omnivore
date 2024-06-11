@@ -81,6 +81,7 @@ export interface BackendEnv {
     gcsUploadBucket: string
     gcsUploadSAKeyFilePath: string
     gcsUploadPrivateBucket: string
+    dailyUploadLimit: number
   }
   sender: {
     message: string
@@ -118,6 +119,9 @@ export interface BackendEnv {
     clientSecret: string
     authUrl: string
   }
+  score: {
+    apiUrl: string
+  }
 }
 
 const nullableEnvVars = [
@@ -144,6 +148,7 @@ const nullableEnvVars = [
   'POSTHOG_API_KEY',
   'TWITTER_BEARER_TOKEN',
   'GCS_UPLOAD_PRIVATE_BUCKET',
+  'GCS_UPLOAD_DAILY_LIMIT',
   'SENDER_MESSAGE',
   'SENDER_FEEDBACK',
   'SENDER_GENERAL',
@@ -173,12 +178,8 @@ const nullableEnvVars = [
   'NOTION_CLIENT_ID',
   'NOTION_CLIENT_SECRET',
   'NOTION_AUTH_URL',
+  'SCORE_API_URL',
 ] // Allow some vars to be null/empty
-
-/* If not in GAE and Prod/QA/Demo env (f.e. on localhost/dev env), allow following env vars to be null */
-if (process.env.API_ENV == 'local') {
-  nullableEnvVars.push(...['GCS_UPLOAD_BUCKET'])
-}
 
 const envParser =
   (env: { [key: string]: string | undefined }) =>
@@ -201,6 +202,11 @@ interface Dict<T> {
 export function getEnv(): BackendEnv {
   // Dotenv parses env file merging into proces.env which is then read into custom struct here.
   dotenv.config()
+
+  /* If not in GAE and Prod/QA/Demo env (f.e. on localhost/dev env), allow following env vars to be null */
+  if (process.env.API_ENV == 'local') {
+    nullableEnvVars.push(...['GCS_UPLOAD_BUCKET'])
+  }
 
   const parse = envParser(process.env)
   const pg = {
@@ -275,6 +281,9 @@ export function getEnv(): BackendEnv {
     gcsUploadBucket: parse('GCS_UPLOAD_BUCKET'),
     gcsUploadSAKeyFilePath: parse('GCS_UPLOAD_SA_KEY_FILE_PATH'),
     gcsUploadPrivateBucket: parse('GCS_UPLOAD_PRIVATE_BUCKET'),
+    dailyUploadLimit: parse('GCS_UPLOAD_DAILY_LIMIT')
+      ? parseInt(parse('GCS_UPLOAD_DAILY_LIMIT'), 10)
+      : 5, // default to 5
   }
   const sender = {
     message: parse('SENDER_MESSAGE'),
@@ -324,6 +333,9 @@ export function getEnv(): BackendEnv {
     clientSecret: parse('NOTION_CLIENT_SECRET'),
     authUrl: parse('NOTION_AUTH_URL'),
   }
+  const score = {
+    apiUrl: parse('SCORE_API_URL') || 'http://digest-score/batch',
+  }
 
   return {
     pg,
@@ -347,6 +359,7 @@ export function getEnv(): BackendEnv {
     subscription,
     redis,
     notion,
+    score,
   }
 }
 

@@ -1,6 +1,6 @@
 import { GraphQLClient } from 'graphql-request'
-import { gqlEndpoint, fetchEndpoint } from '../appConfig'
 import { IncomingMessage } from 'http'
+import { fetchEndpoint, gqlEndpoint } from '../appConfig'
 
 declare type RequestCookies = {
   [key: string]: string
@@ -12,24 +12,21 @@ export type RequestContext = {
   }
 }
 
-type RequestHeaders = {
-  authorization?: string
-  pendingUserAuth?: string
-}
-
-function requestHeaders(): RequestHeaders {
+function requestHeaders(): Record<string, string> {
   const authToken = window?.localStorage.getItem('authToken') || undefined
   const pendingAuthToken =
     window?.localStorage.getItem('pendingUserAuth') || undefined
 
   if (authToken) {
     return {
+      'X-OmnivoreClient': 'web',
       authorization: authToken,
     }
   }
 
   if (pendingAuthToken) {
     return {
+      'X-OmnivoreClient': 'web',
       pendingUserAuth: pendingAuthToken,
     }
   }
@@ -68,6 +65,20 @@ export function apiFetcher(path: string): Promise<unknown> {
     mode: 'cors',
   }).then((result) => {
     return result.json()
+  })
+}
+
+export function apiPoster(path: string, body: any): Promise<Response> {
+  const url = new URL(path, fetchEndpoint)
+  return fetch(url.toString(), {
+    method: 'POST',
+    credentials: 'include',
+    mode: 'cors',
+    headers: {
+      'Content-Type': 'application/json',
+      ...requestHeaders(),
+    },
+    body: JSON.stringify(body),
   })
 }
 

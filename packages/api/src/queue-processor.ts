@@ -16,9 +16,25 @@ import { appDataSource } from './data_source'
 import { env } from './env'
 import { TaskState } from './generated/graphql'
 import { aiSummarize, AI_SUMMARIZE_JOB_NAME } from './jobs/ai-summarize'
+import { createDigest, CREATE_DIGEST_JOB } from './jobs/ai/create_digest'
 import { bulkAction, BULK_ACTION_JOB_NAME } from './jobs/bulk_action'
 import { callWebhook, CALL_WEBHOOK_JOB_NAME } from './jobs/call_webhook'
+import {
+  confirmEmailJob,
+  CONFIRM_EMAIL_JOB,
+  forwardEmailJob,
+  FORWARD_EMAIL_JOB,
+  saveAttachmentJob,
+  saveNewsletterJob,
+  SAVE_ATTACHMENT_JOB,
+  SAVE_NEWSLETTER_JOB,
+} from './jobs/email/inbound_emails'
+import { sendEmailJob, SEND_EMAIL_JOB } from './jobs/email/send_email'
 import { findThumbnail, THUMBNAIL_JOB } from './jobs/find_thumbnail'
+import {
+  generatePreviewContent,
+  GENERATE_PREVIEW_CONTENT_JOB,
+} from './jobs/generate_preview_content'
 import {
   exportAllItems,
   EXPORT_ALL_ITEMS_JOB_NAME,
@@ -37,6 +53,10 @@ import { refreshAllFeeds } from './jobs/rss/refreshAllFeeds'
 import { refreshFeed } from './jobs/rss/refreshFeed'
 import { savePageJob } from './jobs/save_page'
 import {
+  scoreLibraryItem,
+  SCORE_LIBRARY_ITEM_JOB,
+} from './jobs/score_library_item'
+import {
   syncReadPositionsJob,
   SYNC_READ_POSITIONS_JOB_NAME,
 } from './jobs/sync_read_positions'
@@ -47,7 +67,9 @@ import {
   UPDATE_HIGHLIGHT_JOB,
   UPDATE_LABELS_JOB,
 } from './jobs/update_db'
+import { updateHome, UPDATE_HOME_JOB } from './jobs/update_home'
 import { updatePDFContentJob } from './jobs/update_pdf_content'
+import { uploadContentJob, UPLOAD_CONTENT_JOB } from './jobs/upload_content'
 import { redisDataSource } from './redis_data_source'
 import { CACHED_READING_POSITION_PREFIX } from './services/cached_reading_position'
 import { getJobPriority } from './utils/createTask'
@@ -56,16 +78,14 @@ import { logger } from './utils/logger'
 export const QUEUE_NAME = 'omnivore-backend-queue'
 export const JOB_VERSION = 'v001'
 
-let backendQueue: Queue | undefined
-export const getBackendQueue = async (): Promise<Queue | undefined> => {
-  if (backendQueue) {
-    await backendQueue.waitUntilReady()
-    return backendQueue
-  }
+export const getBackendQueue = async (
+  name = QUEUE_NAME
+): Promise<Queue | undefined> => {
   if (!redisDataSource.workerRedisClient) {
     throw new Error('Can not create queues, redis is not initialized')
   }
-  backendQueue = new Queue(QUEUE_NAME, {
+
+  const backendQueue = new Queue(name, {
     connection: redisDataSource.workerRedisClient,
     defaultJobOptions: {
       backoff: {
@@ -84,8 +104,11 @@ export const getBackendQueue = async (): Promise<Queue | undefined> => {
   return backendQueue
 }
 
-export const getJob = async (jobId: string) => {
-  const queue = await getBackendQueue()
+export const createJobId = (jobName: string, userId: string) =>
+  `${jobName}_${userId}_${JOB_VERSION}`
+
+export const getJob = async (jobId: string, queueName?: string) => {
+  const queue = await getBackendQueue(queueName)
   if (!queue) {
     return
   }
@@ -157,12 +180,34 @@ export const createWorker = (connection: ConnectionOptions) =>
           return processYouTubeTranscript(job.data)
         case EXPORT_ALL_ITEMS_JOB_NAME:
           return exportAllItems(job.data)
+        case SEND_EMAIL_JOB:
+          return sendEmailJob(job.data)
+        case CONFIRM_EMAIL_JOB:
+          return confirmEmailJob(job.data)
+        case SAVE_ATTACHMENT_JOB:
+          return saveAttachmentJob(job.data)
+        case SAVE_NEWSLETTER_JOB:
+          return saveNewsletterJob(job.data)
+        case FORWARD_EMAIL_JOB:
+          return forwardEmailJob(job.data)
+        case CREATE_DIGEST_JOB:
+          return createDigest(job.data)
+        case UPLOAD_CONTENT_JOB:
+          return uploadContentJob(job.data)
+        case UPDATE_HOME_JOB:
+          return updateHome(job.data)
+        case SCORE_LIBRARY_ITEM_JOB:
+          return scoreLibraryItem(job.data)
+        case GENERATE_PREVIEW_CONTENT_JOB:
+          return generatePreviewContent(job.data)
         default:
-          logger.warn(`[queue-processor] unhandled job: ${job.name}`)
+          logger.warning(`[queue-processor] unhandled job: ${job.name}`)
       }
     },
     {
       connection,
+      autorun: true, // start processing jobs immediately
+      lockDuration: 60_000, // 1 minute
     }
   )
 
@@ -215,7 +260,6 @@ const main = async () => {
     let output = ''
     const metrics: JobType[] = ['active', 'failed', 'completed', 'prioritized']
     const counts = await queue.getJobCounts(...metrics)
-    console.log('counts: ', counts)
 
     metrics.forEach((metric, idx) => {
       output += `# TYPE omnivore_queue_messages_${metric} gauge\n`
@@ -240,6 +284,18 @@ const main = async () => {
         output += `# TYPE omnivore_read_position_messages gauge\n`
         output += `omnivore_read_position_messages{} ${batch.length}\n`
       }
+    }
+
+    // Export the age of the oldest prioritized job in the queue
+    const oldestJobs = await queue.getJobs(['prioritized'], 0, 1, true)
+    if (oldestJobs.length > 0) {
+      const currentTime = Date.now()
+      const ageInSeconds = (currentTime - oldestJobs[0].timestamp) / 1000
+      output += `# TYPE omnivore_queue_messages_oldest_job_age_seconds gauge\n`
+      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${QUEUE_NAME}"} ${ageInSeconds}\n`
+    } else {
+      output += `# TYPE omnivore_queue_messages_oldest_job_age_seconds gauge\n`
+      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${QUEUE_NAME}"} ${0}\n`
     }
 
     res.status(200).setHeader('Content-Type', 'text/plain').send(output)
@@ -280,6 +336,10 @@ const main = async () => {
     console.log('completed job: ', job.jobId)
   })
 
+  queueEvents.on('failed', async (job) => {
+    console.log('failed job: ', job.jobId)
+  })
+
   workerRedisClient.on('error', (error) => {
     console.trace('[queue-processor]: redis worker error', { error })
   })
@@ -290,8 +350,25 @@ const main = async () => {
 
   const gracefulShutdown = async (signal: string) => {
     console.log(`[queue-processor]: Received ${signal}, closing server...`)
+    await new Promise<void>((resolve) => {
+      server.close((err) => {
+        console.log('[queue-processor]: Express server closed')
+        if (err) {
+          console.log('[queue-processor]: error stopping server', { err })
+        }
+
+        resolve()
+      })
+    })
     await worker.close()
+    console.log('[queue-processor]: Worker closed')
+
     await redisDataSource.shutdown()
+    console.log('[queue-processor]: Redis connection closed')
+
+    await appDataSource.destroy()
+    console.log('[queue-processor]: DB connection closed')
+
     process.exit(0)
   }
 

@@ -145,7 +145,7 @@ export const { styled, css, theme, getCssText, globalCss, keyframes, config } =
         // Brand Colors
         omnivoreRed: '#FA5E4A;',
         omnivoreGray: '#3D3D3D',
-        omnivoreYellow: 'rgb(255, 234, 159)',
+        omnivoreYellow: '#FFEAA0',
         omnivoreLightGray: 'rgb(125, 125, 125)',
         omnivoreCtaYellow: 'rgb(255, 210, 52)',
         searchActiveOutline: 'rgb(255, 210, 52)',
@@ -156,6 +156,8 @@ export const { styled, css, theme, getCssText, globalCss, keyframes, config } =
         readerFontHighContrast: 'black',
         readerTableHeader: '#FFFFFF',
         readerMargin: 'white',
+        readerTextSubtle: '#898989',
+        readerHoverBg: '#1E1E1E',
 
         // Avatar Fallback color
         avatarBg: '#FFEA9F',
@@ -216,6 +218,7 @@ export const { styled, css, theme, getCssText, globalCss, keyframes, config } =
         thTextSubtle: '#1E1E1E',
         thTextSubtle2: '#6A6968',
         thTextSubtle3: '#ADADAD',
+        thTextSubtle4: '#EDEDED',
 
         thBorderColor: '#E1E1E1',
         thBorderSubtle: '#EEEEEE',
@@ -289,11 +292,13 @@ const darkThemeSpec = {
     error: '#FA5E4A',
 
     // Reader Colors
-    readerBg: '#303030',
+    readerBg: '#2A2A2A',
     readerFont: '#b9b9b9',
     readerFontHighContrast: 'white',
     readerTableHeader: '#FFFFFF',
     readerMargin: '#2A2A2A',
+    readerHoverBg: '#1E1E1E',
+    readerTextSubtle: '#EDEDED',
 
     avatarBg: '#7B5C3E',
     avatarFont: '#D9D9D9',

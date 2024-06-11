@@ -136,6 +136,9 @@ struct ProfileView: View {
 
       #if os(iOS)
         Section {
+          NavigationLink(destination: ReaderSettingsView()) {
+            Text(LocalText.readerSettingsGeneric)
+          }
           NavigationLink(destination: PushNotificationSettingsView()) {
             Text(LocalText.pushNotificationsGeneric)
           }
@@ -201,7 +204,7 @@ struct ProfileView: View {
         )
       }
 
-      Section(footer: Text(viewModel.appVersionString)) {
+      Section(footer: Text(viewModel.appVersionString + " - \(dataService.appEnvironment.name)")) {
         NavigationLink(
           destination: ManageAccountView()
         ) {

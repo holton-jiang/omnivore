@@ -1,3 +1,4 @@
+// swiftlint:disable file_length type_body_length
 import CoreData
 import Models
 import Services
@@ -181,7 +182,7 @@ struct AnimatingCellHeight: AnimatableModifier {
 
 // swiftlint:disable file_length
 #if os(iOS)
-  private let enableGrid = UIDevice.isIPad || FeatureFlag.enableGridCardsOnPhone
+  private let enableGrid = UIDevice.isIPad
 
   @MainActor
   struct HomeFeedContainerView: View {
@@ -191,6 +192,8 @@ struct AnimatingCellHeight: AnimatableModifier {
     @State var isListScrolled = false
     @State var listTitle = ""
     @State var showExpandedAudioPlayer = false
+    @State var showLibraryDigest = false
+    @State var showDigestConfig = false
 
     @Binding var isEditMode: EditMode
 
@@ -224,7 +227,7 @@ struct AnimatingCellHeight: AnimatableModifier {
     }
 
     var body: some View {
-      ZStack {        
+      ZStack {
         HomeFeedView(
           listTitle: $listTitle,
           isListScrolled: $isListScrolled,
@@ -264,13 +267,17 @@ struct AnimatingCellHeight: AnimatableModifier {
           VStack(spacing: 0) {
             Spacer()
 
-            if let audioProperties = audioController.itemAudioProperties {
-              MiniPlayerViewer(itemAudioProperties: audioProperties)
+            if audioController.itemAudioProperties != nil {
+              MiniPlayerViewer()
                 .padding(.top, 10)
                 .padding(.bottom, 20)
                 .background(Color.themeTabBarColor)
                 .onTapGesture {
-                  showExpandedAudioPlayer = true
+                  if audioController.itemAudioProperties?.audioItemType == .digest {
+                    showLibraryDigest = true
+                  } else {
+                    showExpandedAudioPlayer = true
+                  }
                 }
             }
           }
@@ -316,6 +323,24 @@ struct AnimatingCellHeight: AnimatableModifier {
           }
         )
       }
+      .fullScreenCover(isPresented: $showLibraryDigest) {
+        if #available(iOS 17.0, *) {
+          NavigationView {
+            FullScreenDigestView(dataService: dataService, audioController: audioController)
+          }
+        } else {
+          Text("Sorry digest is only available on iOS 17 and above")
+        }
+      }
+      .sheet(isPresented: $showDigestConfig) {
+        if #available(iOS 17.0, *) {
+          NavigationView {
+            DigestConfigView(dataService: dataService, homeViewModel: viewModel)
+          }
+        } else {
+          Text("Sorry digest is only available on iOS 17 and above")
+        }
+      }
       .toolbar {
         toolbarItems
       }
@@ -336,6 +361,9 @@ struct AnimatingCellHeight: AnimatableModifier {
         // initial help view
         if viewModel.currentFolder == "following", viewModel.fetcher.items.count > 0 {
           viewModel.stopUsingFollowingPrimer = true
+        }
+        if dataService.digestNeedsRefresh() {
+          await viewModel.checkForDigestUpdate(dataService: dataService)
         }
       }
       .environment(\.editMode, self.$isEditMode)
@@ -363,7 +391,6 @@ struct AnimatingCellHeight: AnimatableModifier {
         }
 
         ToolbarItemGroup(placement: .barTrailing) {
-
             if viewModel.appliedFilter?.name == "Deleted" {
               if viewModel.isEmptyingTrash {
                 ProgressView()
@@ -382,6 +409,21 @@ struct AnimatingCellHeight: AnimatableModifier {
               if isEditMode == .active {
                 Button(action: { isEditMode = .inactive }, label: { Text("Cancel") })
               } else {
+                if #available(iOS 17.0, *), dataService.featureFlags.digestEnabled {
+                  Button(
+                    action: { showLibraryDigest = true },
+                    label: { viewModel.digestIsUnread ? Image.tabDigestSelected : Image.tabDigest }
+                  )
+                  .buttonStyle(.plain)
+                  .padding(.trailing, 4)
+                } else if #available(iOS 17.0, *), !dataService.featureFlags.digestEnabled, !viewModel.hideDigestIcon {
+                  Button(
+                    action: { showDigestConfig = true },
+                    label: { Image.tabDigestSelected }
+                  )
+                  .buttonStyle(.plain)
+                  .padding(.trailing, 4)
+                }
                 if prefersListLayout {
                   Button(
                     action: { isEditMode = isEditMode == .active ? .inactive : .active },
@@ -417,7 +459,7 @@ struct AnimatingCellHeight: AnimatableModifier {
                 }
               ).buttonStyle(.plain)
                 .padding(.horizontal, UIDevice.isIPad ? 5 : 0)
-                
+
                 Button(
                   action: {
                     searchPresented = true
@@ -471,12 +513,12 @@ struct AnimatingCellHeight: AnimatableModifier {
     let showFeatureCards: Bool
     var slideTransition: PresentationLinkTransition {
       PresentationLinkTransition.slide(
-        options: PresentationLinkTransition.SlideTransitionOptions(edge: .trailing,
-                                                                   options:
-                                                                    PresentationLinkTransition.Options(
-                                                                      modalPresentationCapturesStatusBarAppearance: true
-                                                                    )
-                                                                  ))
+        options: PresentationLinkTransition.SlideTransitionOptions(
+          edge: .trailing,
+          options: PresentationLinkTransition.Options(
+            modalPresentationCapturesStatusBarAppearance: true
+          )
+        ))
     }
 
     var body: some View {
@@ -484,12 +526,12 @@ struct AnimatingCellHeight: AnimatableModifier {
         if let linkRequest = viewModel.linkRequest, viewModel.currentListConfig?.hasReadNowSection ?? false {
           PresentationLink(
             transition: PresentationLinkTransition.slide(
-              options: PresentationLinkTransition.SlideTransitionOptions(edge: .trailing,
-                                                                         options:
-                                                                         PresentationLinkTransition.Options(
-                                                                           modalPresentationCapturesStatusBarAppearance: true,
-                                                                           preferredPresentationBackgroundColor: ThemeManager.currentBgColor
-                                                                         ))),
+              options: PresentationLinkTransition.SlideTransitionOptions(
+                edge: .trailing,
+                options: PresentationLinkTransition.Options(
+                  modalPresentationCapturesStatusBarAppearance: true,
+                  preferredPresentationBackgroundColor: ThemeManager.currentBgColor
+                ))),
             isPresented: $viewModel.presentWebContainer,
             destination: {
               WebReaderLoadingContainer(requestID: linkRequest.serverID)

@@ -1,10 +1,3 @@
-//
-//  File.swift
-//
-//
-//  Created by Jackson Harper on 11/10/22.
-//
-
 import Foundation
 import Models
 import SwiftGraphQL
@@ -13,6 +6,10 @@ public struct Feature {
   public let name: String
   public let token: String
   public let granted: Bool
+}
+
+public enum IneligibleError: Error {
+  case message(messageText: String)
 }
 
 public extension DataService {
@@ -51,6 +48,9 @@ public extension DataService {
         case let .success(feature: feature):
           continuation.resume(returning: feature)
         case let .error(errorCode: errorCode):
+          if errorCode == .ineligible {
+            continuation.resume(throwing: IneligibleError.message(messageText: "You are not eligible for this feature."))
+          }
           continuation.resume(throwing: BasicError.message(messageText: errorCode.rawValue))
         }
       }

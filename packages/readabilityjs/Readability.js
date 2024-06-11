@@ -263,7 +263,7 @@ Readability.prototype = {
 
   // These are the classes that we want to keep.
   CLASSES_TO_PRESERVE: [
-    "page", "twitter-tweet", "tweet-placeholder", "instagram-placeholder", "morning-brew-markets", "prism-code"
+    "page", "twitter-tweet", "tweet-placeholder", "instagram-placeholder", "morning-brew-markets", "prism-code", "tiktok-embed"
   ],
 
   // Classes of placeholder elements that can be empty but shouldn't be removed
@@ -1917,7 +1917,8 @@ Readability.prototype = {
     var metaElements = this._doc.getElementsByTagName("meta");
 
     // property is a space-separated list of values
-    var propertyPattern = /\s*(dc|dcterm|og|twitter|article)\s*:\s*(locale|author|creator|description|title|site_name|published_time|published|date|image)\s*/gi;
+    var propertyPattern =
+      /\s*(dc|dcterm|og|twitter|article)\s*:\s*(locale|author|creator|description|title|site_name|published_time|published|date|image(?:$|\s|:url|:secure_url))\s*/gi;
 
     // name is a single value
     var namePattern = /^\s*(?:(dc|dcterm|og|twitter|weibo:(article|webpage))\s*[\.:]\s*)?(author|creator|description|title|site_name|date|image)\s*$/i;
@@ -2056,7 +2057,7 @@ Readability.prototype = {
       values["og:image"] ||
       values["weibo:article:image"] ||
       values["weibo:webpage:image"] || 
-      jsonld.previewImage
+      jsonld.previewImage;
 
     metadata.locale = values["og:locale"];
 
@@ -3100,13 +3101,18 @@ Readability.prototype = {
     this._postProcessContent(articleContent);
 
     // If we haven't found an excerpt in the article's metadata, use the article's
-    // first paragraph as the excerpt. This is used for displaying a preview of
+    // first meaningful paragraph (more than 50 characters) as the excerpt. This is used for displaying a preview of
     // the article's content.
     if (!metadata.excerpt) {
       var paragraphs = articleContent.getElementsByTagName("p");
-      if (paragraphs.length > 0) {
-        metadata.excerpt = paragraphs[0].textContent.trim();
-      }
+      for (const p of paragraphs) {
+        const text = p.textContent.trim();
+
+        if (text.length > 50) {
+          metadata.excerpt = text;
+          break;
+        }
+      };
     }
     if (!metadata.siteName) {
       // Fallback to hostname

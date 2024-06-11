@@ -13,6 +13,14 @@ const schema = gql`
     pattern: String
   ) on INPUT_FIELD_DEFINITION
 
+  # default error code
+  enum ErrorCode {
+    UNAUTHORIZED
+    BAD_REQUEST
+    NOT_FOUND
+    FORBIDDEN
+  }
+
   enum SortOrder {
     ASCENDING
     DESCENDING
@@ -89,6 +97,7 @@ const schema = gql`
     source: String
     intercomHash: String
     features: [String]
+    featureList: [Feature!]
   }
 
   type Profile {
@@ -742,6 +751,7 @@ const schema = gql`
     html: String
     color: String
     representation: RepresentationType!
+    libraryItem: Article!
   }
 
   input CreateHighlightInput {
@@ -1066,6 +1076,14 @@ const schema = gql`
     following: [User!]!
   }
 
+  type DigestConfig {
+    channels: [String]
+  }
+
+  input DigestConfigInput {
+    channels: [String]
+  }
+
   type UserPersonalization {
     id: ID
     theme: String
@@ -1079,6 +1097,7 @@ const schema = gql`
     speechRate: String
     speechVolume: String
     fields: JSON
+    digestConfig: DigestConfig
   }
 
   # Query: UserPersonalization
@@ -1121,6 +1140,7 @@ const schema = gql`
     speechRate: String
     speechVolume: String
     fields: JSON
+    digestConfig: DigestConfigInput
   }
 
   # Type: ArticleSavingRequest
@@ -1656,6 +1676,9 @@ const schema = gql`
     folder: String!
     aiSummary: String
     directionality: DirectionalityType
+    format: String
+    score: Float
+    seenAt: Date
   }
 
   type SearchItemEdge {
@@ -2135,6 +2158,7 @@ const schema = gql`
   enum OptInFeatureErrorCode {
     BAD_REQUEST
     NOT_FOUND
+    INELIGIBLE
   }
 
   union RulesResult = RulesSuccess | RulesError
@@ -2166,6 +2190,8 @@ const schema = gql`
     DELETE
     MARK_AS_READ
     SEND_NOTIFICATION
+    WEBHOOK
+    EXPORT
   }
 
   type RulesError {
@@ -2180,6 +2206,9 @@ const schema = gql`
   enum RuleEventType {
     PAGE_CREATED
     PAGE_UPDATED
+    LABEL_CREATED
+    HIGHLIGHT_CREATED
+    HIGHLIGHT_UPDATED
   }
 
   input SetRuleInput {
@@ -2541,6 +2570,8 @@ const schema = gql`
     type: String!
     text: String!
     html: String
+    replyTo: String
+    reply: String
     createdAt: Date!
   }
 
@@ -2566,6 +2597,7 @@ const schema = gql`
     MARK_AS_READ
     ADD_LABELS
     MOVE_TO_FOLDER
+    MARK_AS_SEEN
   }
 
   union BulkActionResult = BulkActionSuccess | BulkActionError
@@ -3060,6 +3092,161 @@ const schema = gql`
     FAILED_TO_CREATE_TASK
   }
 
+  union ReplyToEmailResult = ReplyToEmailSuccess | ReplyToEmailError
+
+  type ReplyToEmailSuccess {
+    success: Boolean!
+  }
+
+  type ReplyToEmailError {
+    errorCodes: [ReplyToEmailErrorCode!]!
+  }
+
+  enum ReplyToEmailErrorCode {
+    UNAUTHORIZED
+  }
+
+  enum AllowedReply {
+    YES
+    OKAY
+    CONFIRM
+    SUBSCRIBE
+  }
+
+  enum HomeItemSourceType {
+    RSS
+    NEWSLETTER
+    RECOMMENDATION
+    LIBRARY
+  }
+
+  type HomeItemSource {
+    id: ID
+    name: String
+    url: String
+    icon: String
+    type: HomeItemSourceType!
+  }
+
+  type HomeItem {
+    id: ID!
+    title: String!
+    url: String!
+    thumbnail: String
+    previewContent: String
+    saveCount: Int
+    likeCount: Int
+    broadcastCount: Int
+    date: Date!
+    slug: String
+    author: String
+    dir: String
+    seen_at: Date
+    wordCount: Int
+    source: HomeItemSource
+    canSave: Boolean
+    canComment: Boolean
+    canShare: Boolean
+    canArchive: Boolean
+    canDelete: Boolean
+    score: Float
+  }
+
+  type HomeSection {
+    title: String
+    layout: String
+    items: [HomeItem!]!
+    thumbnail: String
+  }
+
+  type HomeEdge {
+    cursor: String!
+    node: HomeSection!
+  }
+
+  type HomeSuccess {
+    edges: [HomeEdge!]!
+    pageInfo: PageInfo!
+  }
+
+  enum HomeErrorCode {
+    UNAUTHORIZED
+    BAD_REQUEST
+    PENDING
+  }
+
+  type HomeError {
+    errorCodes: [HomeErrorCode!]!
+  }
+
+  union HomeResult = HomeSuccess | HomeError
+
+  type SubscriptionRootType {
+    hello: String # for testing only
+  }
+
+  type SubscriptionSuccess {
+    subscription: Subscription!
+  }
+
+  type SubscriptionError {
+    errorCodes: [ErrorCode!]!
+  }
+
+  union SubscriptionResult = SubscriptionSuccess | SubscriptionError
+
+  type RefreshHomeSuccess {
+    success: Boolean!
+  }
+
+  enum RefreshHomeErrorCode {
+    PENDING
+  }
+
+  type RefreshHomeError {
+    errorCodes: [RefreshHomeErrorCode!]!
+  }
+
+  union RefreshHomeResult = RefreshHomeSuccess | RefreshHomeError
+
+  union HiddenHomeSectionResult =
+      HiddenHomeSectionSuccess
+    | HiddenHomeSectionError
+
+  type HiddenHomeSectionSuccess {
+    section: HomeSection
+  }
+
+  type HiddenHomeSectionError {
+    errorCodes: [HiddenHomeSectionErrorCode!]!
+  }
+
+  enum HiddenHomeSectionErrorCode {
+    UNAUTHORIZED
+    BAD_REQUEST
+    PENDING
+  }
+
+  union HighlightsResult = HighlightsSuccess | HighlightsError
+
+  type HighlightsSuccess {
+    edges: [HighlightEdge!]!
+    pageInfo: PageInfo!
+  }
+
+  type HighlightEdge {
+    cursor: String!
+    node: Highlight!
+  }
+
+  type HighlightsError {
+    errorCodes: [HighlightsErrorCode!]!
+  }
+
+  enum HighlightsErrorCode {
+    BAD_REQUEST
+  }
+
   # Mutations
   type Mutation {
     googleLogin(input: GoogleLoginInput!): LoginResult!
@@ -3159,6 +3346,7 @@ const schema = gql`
       contentType: String!
     ): UploadImportFileResult!
     markEmailAsItem(recentEmailId: ID!): MarkEmailAsItemResult!
+    replyToEmail(recentEmailId: ID!, reply: AllowedReply!): ReplyToEmailResult!
     bulkAction(
       query: String!
       action: BulkActionType!
@@ -3184,6 +3372,7 @@ const schema = gql`
     ): DeleteDiscoverFeedResult!
     editDiscoverFeed(input: EditDiscoverFeedInput!): EditDiscoverFeedResult!
     emptyTrash: EmptyTrashResult!
+    refreshHome: RefreshHomeResult!
   }
 
   # FIXME: remove sort from feedArticles after all cached tabs are closed
@@ -3254,6 +3443,16 @@ const schema = gql`
     feeds(input: FeedsInput!): FeedsResult!
     discoverFeeds: DiscoverFeedResult!
     scanFeeds(input: ScanFeedsInput!): ScanFeedsResult!
+    home(first: Int, after: String): HomeResult!
+    subscription(id: ID!): SubscriptionResult!
+    hiddenHomeSection: HiddenHomeSectionResult!
+    highlights(after: String, first: Int, query: String): HighlightsResult!
+  }
+
+  schema {
+    query: Query
+    mutation: Mutation
+    subscription: SubscriptionRootType
   }
 `
 

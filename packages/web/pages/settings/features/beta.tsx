@@ -1,31 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Spinner } from 'phosphor-react'
+import { useCallback, useMemo, useState } from 'react'
 import { Toaster } from 'react-hot-toast'
 import { Button } from '../../../components/elements/Button'
-import {
-  Box,
-  HStack,
-  SpanBox,
-  VStack,
-} from '../../../components/elements/LayoutPrimitives'
+import { HStack, VStack } from '../../../components/elements/LayoutPrimitives'
 import { StyledText } from '../../../components/elements/StyledText'
 import { SettingsLayout } from '../../../components/templates/SettingsLayout'
-import { styled, theme } from '../../../components/tokens/stitches.config'
-import { updateEmailMutation } from '../../../lib/networking/mutations/updateEmailMutation'
-import { updateUserMutation } from '../../../lib/networking/mutations/updateUserMutation'
-import { updateUserProfileMutation } from '../../../lib/networking/mutations/updateUserProfileMutation'
-import { useGetLibraryItemsQuery } from '../../../lib/networking/queries/useGetLibraryItemsQuery'
+import { styled } from '../../../components/tokens/stitches.config'
+import { userHasFeature } from '../../../lib/featureFlag'
+import { optInFeature } from '../../../lib/networking/mutations/optIntoFeatureMutation'
 import { useGetViewerQuery } from '../../../lib/networking/queries/useGetViewerQuery'
-import { useValidateUsernameQuery } from '../../../lib/networking/queries/useValidateUsernameQuery'
 import { applyStoredTheme } from '../../../lib/themeUpdater'
 import { showErrorToast, showSuccessToast } from '../../../lib/toastHelpers'
-import { ConfirmationModal } from '../../../components/patterns/ConfirmationModal'
-import { ProgressBar } from '../../../components/elements/ProgressBar'
-import { emptyTrashMutation } from '../../../lib/networking/mutations/emptyTrashMutation'
-import { ProgressIndicator } from '@radix-ui/react-progress'
-import { Spinner } from 'phosphor-react'
-import { optInFeature } from '../../../lib/networking/mutations/optIntoFeatureMutation'
-
-const ACCOUNT_LIMIT = 50_000
 
 const StyledLabel = styled('label', {
   fontWeight: 600,
@@ -33,7 +18,7 @@ const StyledLabel = styled('label', {
   marginBottom: '5px',
 })
 
-export default function Account(): JSX.Element {
+export default function BetaFeatures(): JSX.Element {
   const { viewerData, isLoading, mutate } = useGetViewerQuery()
   const [pageLoading, setPageLoading] = useState(false)
 
@@ -57,8 +42,8 @@ export default function Account(): JSX.Element {
   )
 
   const hasYouTube = useMemo(() => {
-    return (
-      (viewerData?.me?.features.indexOf('youtube-transcripts') ?? -1) !== -1
+    return viewerData?.me?.featureList?.some(
+      (f) => f.name === 'youtube-transcripts'
     )
   }, [viewerData])
 
@@ -99,7 +84,7 @@ export default function Account(): JSX.Element {
             <StyledLabel>Enabled beta features</StyledLabel>
             {!showSpinner ? (
               <>
-                {viewerData?.me?.features.map((feature) => {
+                {viewerData?.me?.featureList.map((feature) => {
                   return (
                     <StyledText
                       key={`feature-${feature}`}
@@ -113,10 +98,14 @@ export default function Account(): JSX.Element {
                     >
                       <input
                         type="checkbox"
-                        checked={true}
+                        checked={userHasFeature(viewerData?.me, feature.name)}
                         disabled={true}
                       ></input>
-                      {feature}
+                      {`${feature.name}${
+                        userHasFeature(viewerData?.me, feature.name)
+                          ? ''
+                          : ' - Requested'
+                      }`}
                     </StyledText>
                   )
                 })}

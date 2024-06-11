@@ -37,7 +37,6 @@ data class ArticleContent(
   val htmlContent: String,
   val highlights: List<Highlight>,
   val contentStatus: String, // ArticleContentStatus,
-  val objectID: String?, // whatever the Room Equivalent of objectID is
   val labelsJSONString: String
 ) {
   fun highlightsJSONString(): String {
@@ -57,7 +56,7 @@ data class WebReaderContent(
 
 
     val textFontSize = preferences.textFontSize
-    val highlightCssFilePath = "highlight${if (preferences.themeKey == "Dark") "-dark" else ""}.css"
+    val highlightCssFilePath = "highlight${if (preferences.themeKey == "Dark" || preferences.themeKey == "Black") "-dark" else ""}.css"
 
     Log.d("theme", "current theme is: ${preferences.themeKey}")
 

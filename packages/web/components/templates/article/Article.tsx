@@ -67,9 +67,8 @@ export function Article(props: ArticleProps): JSX.Element {
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [imageSrcs, setImageSrcs] = useState<SlideImage[]>([])
   const [lightboxIndex, setlightBoxIndex] = useState(0)
-  const [linkHoverData, setlinkHoverData] = useState<
-    LinkHoverData | undefined
-  >()
+  const [linkHoverData, setlinkHoverData] =
+    useState<LinkHoverData | undefined>()
 
   useEffect(() => {
     ;(async () => {
@@ -119,12 +118,24 @@ export function Article(props: ArticleProps): JSX.Element {
     const youtubePlayer = document.getElementById('_omnivore_youtube_video')
 
     const updateScroll = () => {
-      console.log('scroll y: ', window.scrollY, youtubePlayer)
+      const YOUTUBE_PLACEHOLDER_ID = 'omnivore-youtube-placeholder'
+      const youtubePlaceholder = document.getElementById(YOUTUBE_PLACEHOLDER_ID)
 
       if (youtubePlayer) {
-        if (window.scrollY > 200) {
+        if (window.scrollY > 400) {
+          if (!youtubePlaceholder) {
+            const rect = youtubePlayer.getBoundingClientRect()
+            const placeholder = document.createElement('div')
+            placeholder.setAttribute('id', YOUTUBE_PLACEHOLDER_ID)
+            placeholder.style.width = rect.width + 'px'
+            placeholder.style.height = rect.height + 'px'
+            youtubePlayer.parentNode?.insertBefore(placeholder, youtubePlayer)
+          }
           youtubePlayer.classList.add('is-sticky')
         } else {
+          if (youtubePlaceholder) {
+            youtubePlayer.parentNode?.removeChild(youtubePlaceholder)
+          }
           youtubePlayer.classList.remove('is-sticky')
         }
       }
@@ -229,6 +240,35 @@ export function Article(props: ArticleProps): JSX.Element {
             theme: isDarkTheme() ? 'dark' : 'light',
             align: 'center',
             dnt: 'true',
+          })
+        })
+      })()
+    }
+  }, [])
+
+  useEffect(() => {
+    const tikTokPlaceholders = Array.from(
+      document.getElementsByClassName('tiktok-embed')
+    )
+
+    if (tikTokPlaceholders.length > 0) {
+      ;(async () => {
+        const tkScriptUrl = 'https://www.tiktok.com/embed.js'
+        const tkScriptWindowFieldName = 'tiktok'
+        const tkScriptName = tkScriptWindowFieldName
+
+        await new Promise((resolve, reject) => {
+          if (!loadjs.isDefined(tkScriptName)) {
+            loadjs(tkScriptUrl, tkScriptName)
+          }
+          loadjs.ready(tkScriptName, {
+            success: () => {
+              if (window.tiktokEmbed) {
+                window.tiktokEmbed.lib.render(tikTokPlaceholders)
+              }
+              resolve(true)
+            },
+            error: () => reject(new Error('Could not load TikTok handler')),
           })
         })
       })()

@@ -11,7 +11,6 @@ import axios from 'axios'
 import cors from 'cors'
 import type { Request, Response } from 'express'
 import express from 'express'
-import rateLimit from 'express-rate-limit'
 import * as jwt from 'jsonwebtoken'
 import url from 'url'
 import { promisify } from 'util'
@@ -24,7 +23,7 @@ import { userRepository } from '../../repository/user'
 import { isErrorWithCode } from '../../resolvers'
 import { createUser } from '../../services/create_user'
 import {
-  sendConfirmationEmail,
+  sendNewAccountVerificationEmail,
   sendPasswordResetEmail,
 } from '../../services/send_emails'
 import { analytics } from '../../utils/analytics'
@@ -36,6 +35,8 @@ import {
 } from '../../utils/auth'
 import { corsConfig } from '../../utils/corsConfig'
 import { logger } from '../../utils/logger'
+import { hourlyLimiter } from '../../utils/rate_limit'
+import { verifyChallengeRecaptcha } from '../../utils/recaptcha'
 import { createSsoToken, ssoRedirectURL } from '../../utils/sso'
 import { handleAppleWebAuth } from './apple_auth'
 import type { AuthProvider } from './auth_types'
@@ -55,6 +56,7 @@ export interface SignupRequest {
   username: string
   bio?: string
   pictureUrl?: string
+  recaptchaToken?: string
 }
 
 const signToken = promisify(jwt.sign)
@@ -64,31 +66,30 @@ const cookieParams = {
   maxAge: 365 * 24 * 60 * 60 * 1000,
 }
 
+const isURLPresent = (input: string): boolean => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g
+  return urlRegex.test(input)
+}
+
 export const isValidSignupRequest = (obj: any): obj is SignupRequest => {
   return (
     'email' in obj &&
     obj.email.trim().length > 0 &&
     obj.email.trim().length < 512 && // email must not be empty
+    !isURLPresent(obj.email) &&
     'password' in obj &&
     obj.password.length >= 8 &&
     obj.password.trim().length < 512 && // password must be at least 8 characters
     'name' in obj &&
     obj.name.trim().length > 0 &&
     obj.name.trim().length < 512 && // name must not be empty
+    !isURLPresent(obj.name) &&
     'username' in obj &&
     obj.username.trim().length > 0 &&
-    obj.username.trim().length < 512 // username must not be empty
+    obj.username.trim().length < 512 && // username must not be empty
+    !isURLPresent(obj.username)
   )
 }
-
-// The hourly limiter is used on the create account,
-// and reset password endpoints
-// this limits users to five operations per an hour
-const hourlyLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  skip: (req) => env.dev.isLocal,
-})
 
 export function authRouter() {
   const router = express.Router()
@@ -415,6 +416,7 @@ export function authRouter() {
       interface LoginRequest {
         email: string
         password: string
+        recaptchaToken?: string
       }
       function isValidLoginRequest(obj: any): obj is LoginRequest {
         return (
@@ -429,7 +431,19 @@ export function authRouter() {
           `${env.client.url}/auth/email-login?errorCodes=${LoginErrorCode.InvalidCredentials}`
         )
       }
-      const { email, password } = req.body
+
+      const { email, password, recaptchaToken } = req.body
+      if (process.env.RECAPTCHA_CHALLENGE_SECRET_KEY) {
+        const verified =
+          recaptchaToken && (await verifyChallengeRecaptcha(recaptchaToken))
+        if (!verified) {
+          logger.info('recaptcha failed', { recaptchaToken, verified })
+          return res.redirect(
+            `${env.client.url}/auth/email-login?errorCodes=UNKNOWN`
+          )
+        }
+      }
+
       try {
         const user = await userRepository.findByEmail(email.trim())
         if (!user || user.status === StatusType.Deleted) {
@@ -439,7 +453,7 @@ export function authRouter() {
         }
 
         if (user.status === StatusType.Pending && user.email) {
-          await sendConfirmationEmail({
+          await sendNewAccountVerificationEmail({
             id: user.id,
             email: user.email,
             name: user.name,
@@ -499,7 +513,27 @@ export function authRouter() {
           `${env.client.url}/auth/email-signup?errorCodes=INVALID_CREDENTIALS`
         )
       }
-      const { email, password, name, username, bio, pictureUrl } = req.body
+      const {
+        email,
+        password,
+        name,
+        username,
+        bio,
+        pictureUrl,
+        recaptchaToken,
+      } = req.body
+
+      if (process.env.RECAPTCHA_CHALLENGE_SECRET_KEY) {
+        const verified =
+          recaptchaToken && (await verifyChallengeRecaptcha(recaptchaToken))
+        if (!verified) {
+          logger.info('recaptcha failed', { recaptchaToken, verified })
+          return res.redirect(
+            `${env.client.url}/auth/email-signup?errorCodes=UNKNOWN`
+          )
+        }
+      }
+
       // trim whitespace in email address
       const trimmedEmail = email.trim()
       try {
@@ -619,6 +653,17 @@ export function authRouter() {
         return res.redirect(
           `${env.client.url}/auth/forgot-password?errorCodes=INVALID_EMAIL`
         )
+      }
+
+      const captchaToken = req.body.recaptchaToken as string
+      if (process.env.RECAPTCHA_CHALLENGE_SECRET_KEY) {
+        const verified = await verifyChallengeRecaptcha(captchaToken)
+        if (!verified) {
+          logger.info('recaptcha failed', { captchaToken, verified })
+          return res.redirect(
+            `${env.client.url}/auth/forgot-password?errorCodes=UNKNOWN`
+          )
+        }
       }
 
       try {

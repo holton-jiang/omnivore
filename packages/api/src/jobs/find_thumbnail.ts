@@ -5,7 +5,7 @@ import {
   findLibraryItemById,
   updateLibraryItem,
 } from '../services/library_item'
-import { createThumbnailUrl } from '../utils/imageproxy'
+import { createThumbnailProxyUrl } from '../utils/imageproxy'
 import { logger } from '../utils/logger'
 
 interface Data {
@@ -22,7 +22,7 @@ interface ImageSize {
 export const THUMBNAIL_JOB = 'find-thumbnail'
 
 const fetchImage = async (url: string): Promise<AxiosResponse | null> => {
-  logger.info('fetching image', url)
+  logger.info('fetching image', { url })
   try {
     // get image file by url
     return await axios.get(url, {
@@ -36,7 +36,7 @@ const fetchImage = async (url: string): Promise<AxiosResponse | null> => {
   }
 }
 
-const getImageSize = async (src: string): Promise<ImageSize | null> => {
+export const getImageSize = async (src: string): Promise<ImageSize | null> => {
   try {
     const response = await fetchImage(src)
     if (!response) {
@@ -127,7 +127,9 @@ export const _findThumbnail = (imagesSizes: (ImageSize | null)[]) => {
 export const findThumbnail = async (data: Data) => {
   const { libraryItemId, userId } = data
 
-  const item = await findLibraryItemById(libraryItemId, userId)
+  const item = await findLibraryItemById(libraryItemId, userId, {
+    select: ['thumbnail', 'readableContent'],
+  })
   if (!item) {
     logger.info('page not found')
     return false
@@ -135,7 +137,7 @@ export const findThumbnail = async (data: Data) => {
 
   const thumbnail = item.thumbnail
   if (thumbnail) {
-    const proxyUrl = createThumbnailUrl(thumbnail)
+    const proxyUrl = createThumbnailProxyUrl(thumbnail)
     // pre-cache thumbnail first if exists
     const image = await fetchImage(proxyUrl)
     if (!image) {
@@ -161,7 +163,9 @@ export const findThumbnail = async (data: Data) => {
       {
         thumbnail,
       },
-      userId
+      userId,
+      undefined,
+      true
     )
     logger.info(`thumbnail updated: ${thumbnail}`)
   }

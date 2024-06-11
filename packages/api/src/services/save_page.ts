@@ -16,7 +16,6 @@ import {
   SaveResult,
 } from '../generated/graphql'
 import { Merge } from '../util'
-import { enqueueThumbnailJob } from '../utils/createTask'
 import {
   cleanUrl,
   generateSlug,
@@ -68,7 +67,12 @@ const shouldParseInBackend = (input: SavePageInput): boolean => {
 
 export type SavePageArgs = Merge<
   SavePageInput,
-  { feedContent?: string; previewImage?: string; author?: string }
+  {
+    feedContent?: string
+    previewImage?: string
+    author?: string
+    originalContentUploaded?: boolean
+  }
 >
 
 export const savePage = async (
@@ -145,7 +149,8 @@ export const savePage = async (
     itemToSave,
     user.id,
     undefined,
-    isImported
+    isImported,
+    input.originalContentUploaded
   )
   clientRequestId = newItem.id
 
@@ -156,17 +161,6 @@ export const savePage = async (
     input.labels,
     input.rssFeedUrl
   )
-
-  // we don't want to create thumbnail for imported pages and pages that already have thumbnail
-  if (!isImported && !parseResult.parsedContent?.previewImage) {
-    try {
-      // create a task to update thumbnail and pre-cache all images
-      const job = await enqueueThumbnailJob(user.id, clientRequestId)
-      logger.info('Created thumbnail job', { job })
-    } catch (e) {
-      logger.error('Failed to enqueue thumbnail job', e)
-    }
-  }
 
   if (parseResult.highlightData) {
     const highlight: DeepPartial<Highlight> = {
@@ -249,6 +243,7 @@ export const parsedContentToLibraryItem = ({
     originalContent: originalHtml,
     readableContent: parsedContent?.content || '',
     description: parsedContent?.excerpt,
+    previewContent: parsedContent?.excerpt,
     title:
       title ||
       parsedContent?.title ||
@@ -261,7 +256,10 @@ export const parsedContentToLibraryItem = ({
     itemType,
     textContentHash:
       uploadFileHash || stringToHash(parsedContent?.content || url),
-    thumbnail: parsedContent?.previewImage ?? undefined,
+    thumbnail:
+      (preparedDocument?.pageInfo.previewImage ||
+        parsedContent?.previewImage) ??
+      undefined,
     publishedAt: validatedDate(
       publishedAt || parsedContent?.publishedDate || undefined
     ),
@@ -271,7 +269,7 @@ export const parsedContentToLibraryItem = ({
     state: state
       ? (state as unknown as LibraryItemState)
       : LibraryItemState.Succeeded,
-    savedAt: validatedDate(savedAt),
+    savedAt: validatedDate(savedAt) || new Date(),
     siteName: parsedContent?.siteName,
     itemLanguage: parsedContent?.language,
     siteIcon: parsedContent?.siteIcon,

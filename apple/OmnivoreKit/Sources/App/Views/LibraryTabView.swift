@@ -1,10 +1,3 @@
-//
-//  File.swift
-//
-//
-//  Created by Jackson Harper on 6/29/23.
-//
-
 import Foundation
 import Models
 import Services
@@ -22,7 +15,10 @@ struct LibraryTabView: View {
   @AppStorage(UserDefaultKey.lastSelectedTabItem.rawValue) var selectedTab = "inbox"
 
   @State var isEditMode: EditMode = .inactive
+  @State var showLibraryDigest = false
   @State var showExpandedAudioPlayer = false
+  @State var presentPushContainer = true
+  @State var pushLinkRequest: String?
 
   private let syncManager = LibrarySyncManager()
 
@@ -74,15 +70,46 @@ struct LibraryTabView: View {
   @State var operationStatus: OperationStatus = .none
   @State var operationMessage: String?
 
+  var displayTabs: [String] {
+    var res = [String]()
+    if !hideFollowingTab {
+      res.append("following")
+    }
+    res.append("inbox")
+    res.append("profile")
+    return res
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       WindowLink(level: .alert, transition: .move(edge: .bottom), isPresented: $showOperationToast) {
-        OperationToast(operationMessage: $operationMessage, 
+        OperationToast(operationMessage: $operationMessage,
                        showOperationToast: $showOperationToast,
                        operationStatus: $operationStatus)
       } label: {
         EmptyView()
       }.buttonStyle(.plain)
+
+      if let pushLinkRequest = pushLinkRequest {
+        PresentationLink(
+          transition: PresentationLinkTransition.slide(
+            options: PresentationLinkTransition.SlideTransitionOptions(
+              edge: .trailing,
+              options: PresentationLinkTransition.Options(
+                modalPresentationCapturesStatusBarAppearance: true,
+                preferredPresentationBackgroundColor: ThemeManager.currentBgColor
+              ))),
+          isPresented: $presentPushContainer,
+          destination: {
+            WebReaderLoadingContainer(requestID: pushLinkRequest)
+              .background(ThemeManager.currentBgColor)
+              .environmentObject(dataService)
+              .environmentObject(audioController)
+          }, label: {
+            EmptyView()
+          }
+        )
+      }
 
       TabView(selection: $selectedTab) {
         if !hideFollowingTab {
@@ -104,10 +131,15 @@ struct LibraryTabView: View {
             .navigationViewStyle(.stack)
         }.tag("profile")
       }
-      if let audioProperties = audioController.itemAudioProperties {
-        MiniPlayerViewer(itemAudioProperties: audioProperties)
+
+      if audioController.itemAudioProperties != nil {
+        MiniPlayerViewer()
           .onTapGesture {
-            showExpandedAudioPlayer = true
+            if audioController.itemAudioProperties?.audioItemType == .digest {
+              showLibraryDigest = true
+            } else {
+              showExpandedAudioPlayer = true
+            }
           }
           .padding(0)
         Color(hex: "#3D3D3D")
@@ -115,7 +147,9 @@ struct LibraryTabView: View {
           .frame(maxWidth: .infinity)
       }
       if isEditMode != .active {
-        CustomTabBar(selectedTab: $selectedTab, hideFollowingTab: hideFollowingTab)
+        CustomTabBar(
+          displayTabs: displayTabs,
+          selectedTab: $selectedTab)
           .padding(0)
       }
     }
@@ -138,6 +172,15 @@ struct LibraryTabView: View {
         }
       )
     }
+    .fullScreenCover(isPresented: $showLibraryDigest) {
+      if #available(iOS 17.0, *) {
+        NavigationView {
+          FullScreenDigestView(dataService: dataService, audioController: audioController)
+        }
+      } else {
+        Text("Sorry digest is only available on iOS 17 and above")
+      }
+    }
     .navigationBarHidden(true)
     .onReceive(NSNotification.performSyncPublisher) { _ in
       Task {
@@ -145,15 +188,9 @@ struct LibraryTabView: View {
       }
     }
     .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PushLibraryItem"))) { notification in
-      guard let folder = notification.userInfo?["libraryItemId"] as? String else { return }
       guard let libraryItemId = notification.userInfo?["libraryItemId"] as? String else { return }
-      if folder == "following" {
-        selectedTab = "following"
-        followingViewModel.pushLinkedRequest(request: LinkRequest(id: UUID(), serverID: libraryItemId))
-      } else {
-        selectedTab = "inbox"
-        inboxViewModel.pushLinkedRequest(request: LinkRequest(id: UUID(), serverID: libraryItemId))
-      }
+      pushLinkRequest = libraryItemId
+      presentPushContainer = true
     }
     .onOpenURL { url in
       inboxViewModel.linkRequest = nil
@@ -178,6 +215,9 @@ struct LibraryTabView: View {
         }
       }
       selectedTab = "inbox"
+    }
+    .task {
+      await dataService.tryUpdateFeatureFlags()
     }
   }
 }
